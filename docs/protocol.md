@@ -40,6 +40,8 @@ Agent → 서버:
 
 ## 현재 관리자 조회 흐름
 
+Agent는 별도 EC2 TLS 서버에 연결할 때 인증서·서버 이름을 검증하고 `REGISTER`에 해당 PC의 `token`을 추가합니다. 이 기능은 Agent 측 연결 옵션이며, 아래 로컬 서버의 관리자 접속에는 TLS·토큰을 추가하지 않았습니다.
+
 관리자는 `{"type":"REGISTER","role":"admin"}`으로 등록하고 `{"type":"REGISTER_RESULT","ok":true}`를 받습니다. 이후 1초마다 `{"type":"LIST_DEVICES"}`를 요청합니다.
 
 응답 예시:

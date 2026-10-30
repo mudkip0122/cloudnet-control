@@ -2,7 +2,7 @@
 
 AWS EC2 기반 TCP/TLS 통신으로 Windows PC의 상태를 모니터링하고, 인증된 관리자 명령으로 테스트 PC를 종료·재부팅하는 3인 팀 프로젝트입니다.
 
-현재는 로컬 실시간 모니터링이 가능합니다. Agent의 실제 CPU·RAM·네트워크 값을 서버를 거쳐 GUI에 표시합니다. [실시간 실행 안내](docs/live-monitoring.md)를 따라 실행하세요. TLS·인증 및 EC2 연결은 이후 단계입니다.
+현재는 로컬 실시간 모니터링이 가능합니다. Agent의 실제 CPU·RAM·네트워크 값을 서버를 거쳐 GUI에 표시합니다. [실시간 실행 안내](docs/live-monitoring.md)를 따라 실행하세요. Agent는 [TLS·토큰을 사용한 EC2 접속](docs/agent-windows.md)도 지원하며, 저장소의 서버·GUI는 로컬 개발용입니다.
 
 ## 목표
 
