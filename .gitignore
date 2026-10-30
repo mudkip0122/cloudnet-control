@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+.aws/
+credentials/
+secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Runtime data
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.log
+logs/
+
+# Local tools and operating systems
+.idea/
+.vscode/
+.codex/
+.DS_Store
+Thumbs.db
+Desktop.ini
