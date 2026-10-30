@@ -1,6 +1,5 @@
 """Live local dashboard: python -m admin_gui.main."""
 import argparse
-from datetime import datetime, timezone
 import queue
 import socket
 import threading
@@ -8,6 +7,8 @@ import tkinter as tk
 from tkinter import ttk
 
 from common.protocol import recv_message, send_message
+from admin_gui.presentation import device_view
+from admin_gui.charts import LiveCharts, MetricHistory
 
 
 class Dashboard:
@@ -17,8 +18,12 @@ class Dashboard:
         self.stop = threading.Event()
         self.updates = queue.Queue(maxsize=1)
         self.sock = None
+        self.devices = {}
+        self.connected = False
+        self.history = MetricHistory()
         root.title("CloudNet Control — Live local monitoring")
-        root.geometry("1000x380")
+        root.geometry("1100x880")
+        root.minsize(950, 820)
         self.status = tk.StringVar(value="서버 연결 중…")
         ttk.Label(root, textvariable=self.status, font=("", 13)).pack(pady=15)
         columns = ("name", "state", "cpu", "ram", "up", "down", "time")
@@ -29,6 +34,23 @@ class Dashboard:
         self.table.column("name", width=200)
         self.table.column("time", width=180)
         self.table.pack(fill="both", expand=True, padx=15)
+        self.table.bind("<<TreeviewSelect>>", self.show_detail)
+        detail = ttk.LabelFrame(root, text="선택 PC 상세")
+        detail.pack(fill="x", padx=15, pady=10)
+        self.details = {}
+        for index, (key, label) in enumerate((
+                ("name", "PC 이름 / ID"), ("state", "상태"),
+                ("cpu", "CPU %"), ("ram", "RAM %"),
+                ("up", "업로드 Mbps"), ("down", "다운로드 Mbps"),
+                ("time", "측정 시각 UTC"), ("received", "서버 최근 수신 UTC"),
+                ("age", "측정 후 경과"))):
+            value = tk.StringVar(value="—")
+            self.details[key] = value
+            ttk.Label(detail, text=label).grid(row=index, column=0, sticky="w", padx=12, pady=2)
+            ttk.Label(detail, textvariable=value).grid(row=index, column=1, sticky="w", padx=12)
+        ttk.Label(detail, text="종료·재부팅: 서버 명령 연동 후 제공").grid(row=0, column=2, padx=20)
+        self.charts = LiveCharts(root)
+        self.charts.pack(fill="both", expand=True, padx=15)
         ttk.Label(root, text="실제 측정값 · Agent 2초 수집 / 화면 1초 조회 · 결측값 — · 로컬 전용").pack(pady=15)
         root.protocol("WM_DELETE_WINDOW", self.close)
         self.worker = threading.Thread(target=self.receive, daemon=True)
@@ -68,28 +90,39 @@ class Dashboard:
     def tick(self):
         try:
             connected, data = self.updates.get_nowait()
-            self.table.delete(*self.table.get_children())
+            self.connected = connected
             if not connected:
                 self.status.set("서버 연결 끊김 · 3초 후 재시도: " + data)
             else:
                 self.status.set(f"서버 연결됨 · 등록 PC {len(data)}대" if data else "서버 연결됨 · Agent 접속 대기")
-                for device in data:
-                    metrics = device.get("metrics") or {}
-                    stale = True
-                    if metrics.get("timestamp"):
-                        stamp = datetime.fromisoformat(metrics["timestamp"].replace("Z", "+00:00"))
-                        stale = (datetime.now(timezone.utc) - stamp).total_seconds() > 6
-                    valid = device["online"] and not stale
-                    def fmt(field, places):
-                        value = metrics.get(field)
-                        return f"{value:.{places}f}" if valid and value is not None else "—"
-                    state = "오프라인" if not device["online"] else ("데이터 대기 / 지연" if stale else "온라인")
-                    self.table.insert("", "end", values=(device["pc_name"] + " / " + device["pc_id"], state,
-                        fmt("cpu_percent", 1), fmt("ram_percent", 1), fmt("upload_mbps", 2),
-                        fmt("download_mbps", 2), metrics.get("timestamp", "—")))
+                self.devices = {device["pc_id"]: device for device in data}
+                self.history.update(self.devices)
         except queue.Empty:
             pass
+        # Re-evaluate freshness even while no new server response arrives.
+        for pc_id in self.table.get_children():
+            if pc_id not in self.devices:
+                self.table.delete(pc_id)
+        for pc_id, device in self.devices.items():
+            view = device_view(device, self.connected)
+            values = tuple(view[key] for key in ("name", "state", "cpu", "ram", "up", "down", "time"))
+            if self.table.exists(pc_id):
+                self.table.item(pc_id, values=values)
+            else:
+                self.table.insert("", "end", iid=pc_id, values=values)
+        if not self.table.selection() and self.devices:
+            self.table.selection_set(next(iter(self.devices)))
+        self.show_detail()
         self.timer = self.root.after(100, self.tick)
+
+    def show_detail(self, event=None):
+        selection = self.table.selection()
+        device = self.devices.get(selection[0]) if selection else None
+        view = device_view(device, self.connected) if device else {}
+        for key, variable in self.details.items():
+            variable.set(view.get(key, "—"))
+        points = self.history.samples.get(selection[0], ()) if device else ()
+        self.charts.show(points, view.get("state", "PC를 선택하세요"))
 
     def close(self):
         self.stop.set()
