@@ -2,7 +2,7 @@
 
 AWS EC2 기반 TCP/TLS 통신으로 Windows PC의 상태를 모니터링하고, 인증된 관리자 명령으로 테스트 PC를 종료·재부팅하는 3인 팀 프로젝트입니다.
 
-현재는 프로젝트 구조를 준비하는 단계이며, 실행 가능한 서버·Agent·GUI는 아직 구현되지 않았습니다.
+현재는 로컬 실시간 모니터링이 가능합니다. Agent의 실제 CPU·RAM·네트워크 값을 서버를 거쳐 GUI에 표시합니다. [실시간 실행 안내](docs/live-monitoring.md)를 따라 실행하세요. TLS·인증 및 EC2 연결은 이후 단계입니다.
 
 ## 목표
 
@@ -28,7 +28,7 @@ Python 3, socket, ssl, threading, psutil, CustomTkinter, Matplotlib, SQLite, AWS
 
 ## 개발 환경 준비
 
-Python 세부 버전과 의존성 버전은 팀에서 확정 후 기록합니다. 현재 설치할 프로젝트 의존성은 없습니다.
+Python 3.11 이상을 기준으로 합니다. 실제 측정값 수집에는 `requirements.txt`의 psutil을 설치합니다.
 
 Windows PowerShell:
 
@@ -36,6 +36,7 @@ Windows PowerShell:
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 Copy-Item .env.example .env
+python -m pip install -r requirements.txt
 ```
 
 `.env`는 설정 항목을 공유하기 위한 예시입니다. 자동 로딩 기능은 아직 구현되지 않았습니다.
@@ -65,6 +66,9 @@ Agent가 전송한 CPU·RAM 값이 서버를 거쳐 관리자 GUI에 표시되�
 
 ## 문서
 
+- [1주차 실행 순서와 담당별 작업](docs/week1-start.md)
+- [로컬 통신 규격](docs/protocol.md)
+- [측정값 필드·단위·예시](docs/metrics-spec.md)
 - [6주 프로젝트 계획서](docs/project-plan.md)
 - [A 담당: 서버·클라우드](docs/roles/A-server-cloud.md)
 - [B 담당: Agent·원격 제어](docs/roles/B-agent-control.md)
