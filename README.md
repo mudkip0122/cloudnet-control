@@ -66,3 +66,6 @@ Agent가 전송한 CPU·RAM 값이 서버를 거쳐 관리자 GUI에 표시되�
 ## 문서
 
 - [6주 프로젝트 계획서](docs/project-plan.md)
+- [A 담당: 서버·클라우드](docs/roles/A-server-cloud.md)
+- [B 담당: Agent·원격 제어](docs/roles/B-agent-control.md)
+- [C 담당: 관리자 GUI·데이터](docs/roles/C-gui-data.md)
