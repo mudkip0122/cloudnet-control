@@ -26,9 +26,9 @@ class Dashboard:
         root.minsize(950, 820)
         self.status = tk.StringVar(value="서버 연결 중…")
         ttk.Label(root, textvariable=self.status, font=("", 13)).pack(pady=15)
-        columns = ("name", "state", "cpu", "ram", "up", "down", "time")
+        columns = ("name", "state", "up", "down", "time")
         self.table = ttk.Treeview(root, columns=columns, show="headings", height=8)
-        for col, title in zip(columns, ("PC 이름 / ID", "상태", "CPU %", "RAM %", "업로드 Mbps", "다운로드 Mbps", "측정 시각 UTC")):
+        for col, title in zip(columns, ("PC 이름 / ID", "상태", "업로드 Mbps", "다운로드 Mbps", "측정 시각 UTC")):
             self.table.heading(col, text=title)
             self.table.column(col, width=120, anchor="center")
         self.table.column("name", width=200)
@@ -40,7 +40,6 @@ class Dashboard:
         self.details = {}
         for index, (key, label) in enumerate((
                 ("name", "PC 이름 / ID"), ("state", "상태"),
-                ("cpu", "CPU %"), ("ram", "RAM %"),
                 ("up", "업로드 Mbps"), ("down", "다운로드 Mbps"),
                 ("time", "측정 시각 UTC"), ("received", "서버 최근 수신 UTC"),
                 ("age", "측정 후 경과"))):
@@ -48,23 +47,27 @@ class Dashboard:
             self.details[key] = value
             ttk.Label(detail, text=label).grid(row=index, column=0, sticky="w", padx=12, pady=2)
             ttk.Label(detail, textvariable=value).grid(row=index, column=1, sticky="w", padx=12)
-        usage = ttk.Frame(detail)
-        usage.grid(row=0, column=2, rowspan=9, sticky="nsew", padx=24, pady=10)
-        detail.columnconfigure(2, weight=1)
-        usage.columnconfigure((0, 1), weight=1)
+        ttk.Label(detail, text="종료·재부팅: 서버 명령 연동 후 제공").grid(
+            row=0, column=2, padx=20)
+        monitoring = ttk.Frame(root)
+        monitoring.pack(fill="both", expand=True, padx=15)
+        monitoring.columnconfigure(1, weight=1)
+        monitoring.rowconfigure(0, weight=1)
+        usage = ttk.Frame(monitoring)
+        usage.grid(row=0, column=0, sticky="ns", padx=(0, 12))
+        usage.columnconfigure(0, weight=1)
+        usage.rowconfigure((0, 1), weight=1)
         self.usage_values = {}
-        for column, (key, title, color) in enumerate((
+        for row, (key, title, color) in enumerate((
                 ("cpu", "CPU 사용률", "#2563eb"), ("ram", "RAM 사용률", "#db2777"))):
             card = ttk.LabelFrame(usage, text=title, padding=(18, 16))
-            card.grid(row=0, column=column, sticky="nsew", padx=6)
+            card.grid(row=row, column=0, sticky="nsew", pady=4)
             value = tk.StringVar(value="—")
             self.usage_values[key] = value
             ttk.Label(card, textvariable=value, font=("Segoe UI", 32, "bold"),
                       foreground=color, anchor="center").pack(fill="x", expand=True)
-        ttk.Label(usage, text="종료·재부팅: 서버 명령 연동 후 제공").grid(
-            row=1, column=0, columnspan=2, pady=(12, 0))
-        self.charts = LiveCharts(root)
-        self.charts.pack(fill="both", expand=True, padx=15)
+        self.charts = LiveCharts(monitoring)
+        self.charts.grid(row=0, column=1, sticky="nsew")
         ttk.Label(root, text="실제 측정값 · Agent 2초 수집 / 화면 1초 조회 · 결측값 — · 로컬 전용").pack(pady=15)
         root.protocol("WM_DELETE_WINDOW", self.close)
         self.worker = threading.Thread(target=self.receive, daemon=True)
@@ -119,7 +122,7 @@ class Dashboard:
                 self.table.delete(pc_id)
         for pc_id, device in self.devices.items():
             view = device_view(device, self.connected)
-            values = tuple(view[key] for key in ("name", "state", "cpu", "ram", "up", "down", "time"))
+            values = tuple(view[key] for key in ("name", "state", "up", "down", "time"))
             if self.table.exists(pc_id):
                 self.table.item(pc_id, values=values)
             else:

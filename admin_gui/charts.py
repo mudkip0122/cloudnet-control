@@ -60,8 +60,13 @@ class LiveCharts(ttk.LabelFrame):
             left, right = 58, width - 22
             top, bottom = 40, height - 34
             canvas.create_text(left, 14, text=title, anchor="w", fill="#334155")
-            for index, (_, label, color) in enumerate(fields):
-                canvas.create_text(right - index * 92, 14, text=label, anchor="e", fill=color)
+            latest = self.points[-1][1] if self.points and self.state == "온라인" else {}
+            for index, (field, label, color) in enumerate(fields):
+                value = latest.get(field)
+                speed = f"{value:.2f} Mbps" if value is not None else "— Mbps"
+                canvas.create_text(right - index * 200, 14,
+                                   text=f"{label}  {speed}", anchor="e", fill=color,
+                                   font=("Segoe UI", 11, "bold"))
             values = [m.get(field) for _, m in self.points for field, _, _ in fields if m.get(field) is not None]
             maximum = ceiling or max(1, max(values, default=0) * 1.15)
             for fraction in (0, .5, 1):

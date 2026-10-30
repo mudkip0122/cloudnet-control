@@ -29,7 +29,7 @@ def main():
         for device in devices:
             dashboard.table.selection_set(device["pc_id"])
             dashboard.show_detail()
-            assert dashboard.details["cpu"].get() == f'{device["metrics"]["cpu_percent"]:.1f}'
+            assert dashboard.usage_values["cpu"].get() == f'{device["metrics"]["cpu_percent"]:.1f} %'
             assert dashboard.charts.points[-1][1]["cpu_percent"] == device["metrics"]["cpu_percent"]
         dashboard.charts.canvas.configure(width=1000, height=210)
         root.update_idletasks()
@@ -44,14 +44,14 @@ def main():
         devices[2]["online"] = False
         refresh(True, devices)
         assert dashboard.details["state"].get() == "오프라인"
-        assert dashboard.details["cpu"].get() == "—"
+        assert dashboard.usage_values["cpu"].get() == "—"
         devices[2]["online"] = True
         devices[2]["metrics"]["timestamp"] = (now - timedelta(seconds=10)).isoformat()
         refresh(True, devices)
         assert dashboard.details["state"].get() == "데이터 지연"
         refresh(False, "simulated disconnect")
         assert dashboard.details["state"].get() == "서버 연결 끊김"
-        assert dashboard.details["ram"].get() == "—"
+        assert dashboard.usage_values["ram"].get() == "—"
         refresh(True, [])
         assert not dashboard.table.get_children()
         assert dashboard.details["name"].get() == "—"
