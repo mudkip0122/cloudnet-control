@@ -48,7 +48,21 @@ class Dashboard:
             self.details[key] = value
             ttk.Label(detail, text=label).grid(row=index, column=0, sticky="w", padx=12, pady=2)
             ttk.Label(detail, textvariable=value).grid(row=index, column=1, sticky="w", padx=12)
-        ttk.Label(detail, text="종료·재부팅: 서버 명령 연동 후 제공").grid(row=0, column=2, padx=20)
+        usage = ttk.Frame(detail)
+        usage.grid(row=0, column=2, rowspan=9, sticky="nsew", padx=24, pady=10)
+        detail.columnconfigure(2, weight=1)
+        usage.columnconfigure((0, 1), weight=1)
+        self.usage_values = {}
+        for column, (key, title, color) in enumerate((
+                ("cpu", "CPU 사용률", "#2563eb"), ("ram", "RAM 사용률", "#db2777"))):
+            card = ttk.LabelFrame(usage, text=title, padding=(18, 16))
+            card.grid(row=0, column=column, sticky="nsew", padx=6)
+            value = tk.StringVar(value="—")
+            self.usage_values[key] = value
+            ttk.Label(card, textvariable=value, font=("Segoe UI", 32, "bold"),
+                      foreground=color, anchor="center").pack(fill="x", expand=True)
+        ttk.Label(usage, text="종료·재부팅: 서버 명령 연동 후 제공").grid(
+            row=1, column=0, columnspan=2, pady=(12, 0))
         self.charts = LiveCharts(root)
         self.charts.pack(fill="both", expand=True, padx=15)
         ttk.Label(root, text="실제 측정값 · Agent 2초 수집 / 화면 1초 조회 · 결측값 — · 로컬 전용").pack(pady=15)
@@ -121,6 +135,9 @@ class Dashboard:
         view = device_view(device, self.connected) if device else {}
         for key, variable in self.details.items():
             variable.set(view.get(key, "—"))
+        for key, variable in self.usage_values.items():
+            value = view.get(key, "—")
+            variable.set(value + " %" if value != "—" else "—")
         points = self.history.samples.get(selection[0], ()) if device else ()
         self.charts.show(points, view.get("state", "PC를 선택하세요"))
 
