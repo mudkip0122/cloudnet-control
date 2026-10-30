@@ -25,6 +25,7 @@ secrets/
 *.pfx
 
 # Runtime data
+runtime/
 *.db
 *.db-*
 *.sqlite

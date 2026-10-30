@@ -22,7 +22,7 @@ Agent → 서버:
 {"type":"REGISTER","role":"agent","pc_id":"example-pc-b-001","pc_name":"TEAM-B-PC"}
 ```
 
-`pc_id`와 `pc_name`은 공백뿐이지 않은 1~128자 문자열입니다. 각 PC의 고유 ID는 재실행할 때도 같은 값을 전달합니다. 현재 프로그램은 ID를 생성·저장하지 않으므로 팀에서 정한 실제 값을 `--pc-id`로 지정합니다.
+`pc_id`와 `pc_name`은 공백뿐이지 않은 1~128자 문자열입니다. Agent는 `--pc-id`를 생략하면 `runtime/agent-id.json`에 UUID를 생성·저장하고 재실행할 때도 같은 값을 전달합니다. 수동 ID는 `--pc-id`로 지정하며 저장된 ID를 덮어쓰지 않습니다.
 
 서버 → Agent (응답 후 연결 유지):
 

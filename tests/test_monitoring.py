@@ -56,6 +56,25 @@ class MonitoringTests(unittest.TestCase):
         self.assertEqual(response["type"], "ERROR")
         self.assertTrue(self.state.snapshot()["devices"][0]["online"])
 
+    def test_three_agents_stay_independent_when_one_disconnects(self):
+        agents = []
+        for index in range(3):
+            pc_id = f"pc-{index}"
+            client, response = self.connect({"type": "REGISTER", "role": "agent", "pc_id": pc_id, "pc_name": pc_id})
+            self.assertTrue(response["ok"])
+            self.state.update_metrics(pc_id, self.metric() | {"pc_id": pc_id, "cpu_percent": index * 10})
+            agents.append(client)
+        agents[1].shutdown(socket.SHUT_RDWR)
+        self.threads[1].join(timeout=2)
+        admin, _ = self.connect({"type": "REGISTER", "role": "admin"})
+        send_message(admin, {"type": "LIST_DEVICES"})
+        devices = {device["pc_id"]: device for device in recv_message(admin)["devices"]}
+        self.assertEqual(len(devices), 3)
+        self.assertFalse(devices["pc-1"]["online"])
+        for pc_id, cpu in (("pc-0", 0), ("pc-2", 20)):
+            self.assertTrue(devices[pc_id]["online"])
+            self.assertEqual(devices[pc_id]["metrics"]["cpu_percent"], cpu)
+
     def test_invalid_metrics_rejected(self):
         for changes in ({"pc_id": "other"}, {"cpu_percent": 101}, {"ram_percent": True},
                         {"upload_mbps": -1}, {"timestamp": "missing-timezone"}):

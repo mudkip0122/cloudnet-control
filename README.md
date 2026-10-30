@@ -66,6 +66,7 @@ Agent가 전송한 CPU·RAM 값이 서버를 거쳐 관리자 GUI에 표시되�
 
 ## 문서
 
+- [B 담당 Windows Agent 실행·문제 해결·인계](docs/agent-windows.md)
 - [1주차 실행 순서와 담당별 작업](docs/week1-start.md)
 - [로컬 통신 규격](docs/protocol.md)
 - [측정값 필드·단위·예시](docs/metrics-spec.md)
