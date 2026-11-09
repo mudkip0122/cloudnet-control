@@ -5,6 +5,7 @@ import sys
 import time
 
 from common.protocol import recv_message, send_message
+from tests.processes import stop_process
 
 
 def start_server(port):
@@ -21,8 +22,7 @@ def start_server(port):
                 return process
         except OSError:
             time.sleep(0.1)
-    process.terminate()
-    process.wait(timeout=5)
+    stop_process(process)
     raise AssertionError("Server did not start")
 
 
@@ -64,8 +64,7 @@ def main():
         assert rejected.returncode == 2, rejected.stderr
         print("Duplicate registration rejected without retry loop", flush=True)
         for round_number in range(1, 4):
-            server.terminate()
-            server.wait(timeout=5)
+            stop_process(server)
             time.sleep(1)
             server = start_server(port)
             second = wait_for_metrics(port)
@@ -77,9 +76,7 @@ def main():
     finally:
         for process in (agent, server):
             if process is not None:
-                if process.poll() is None:
-                    process.terminate()
-                process.wait(timeout=5)
+                stop_process(process)
 
 
 if __name__ == "__main__":

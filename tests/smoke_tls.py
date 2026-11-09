@@ -13,6 +13,7 @@ import tempfile
 import threading
 
 from common.protocol import recv_message, send_message
+from tests.processes import stop_process
 
 
 def main():
@@ -62,8 +63,14 @@ def main():
                                     continue
                                 assert request["pc_id"] == "tls-test-pc"
                                 assert request.get("token") == token.read_text(encoding="utf-8")
-                                send_message(conn, {"type": "REGISTER_RESULT", "ok": True, "pc_id": request["pc_id"]})
+                                send_message(conn, {"type": "REGISTER_RESULT", "ok": True,
+                                                    "pc_id": request["pc_id"], "heartbeat_interval": 1})
                                 message = recv_message(conn)
+                                assert message["type"] == "HEARTBEAT"
+                                assert message["pc_id"] == request["pc_id"]
+                                send_message(conn, {"type": "HEARTBEAT_ACK", "pc_id": request["pc_id"]})
+                                while message["type"] == "HEARTBEAT":
+                                    message = recv_message(conn)
                                 assert message["type"] == "METRICS"
                                 assert message["pc_id"] == "tls-test-pc"
                                 assert isinstance(message["cpu_percent"], (int, float))
@@ -90,11 +97,10 @@ def main():
                 assert len(received) == 2
                 assert received[0]["timestamp"] != received[1]["timestamp"]
                 assert token.read_text(encoding="utf-8") not in (directory / "live.log").read_text(encoding="utf-8")
-                print("PASS: token rejected without retry; verified TLS registration, real metrics, reconnect and re-authentication")
+                print("PASS: token rejected without retry; verified TLS registration, heartbeat/ACK, real metrics, reconnect and re-authentication")
             finally:
                 if agent is not None:
-                    agent.terminate()
-                    agent.wait(timeout=5)
+                    stop_process(agent)
                 worker.join(timeout=1)
 
 

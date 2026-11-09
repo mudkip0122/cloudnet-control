@@ -52,6 +52,9 @@ Agent가 등록되고 2초마다 CPU·RAM·네트워크 값이 전송됩니다. 
 | `--id-file` | 저장소의 `runtime/agent-id.json`. 여러 설치를 구분할 때 별도 경로 지정 |
 | `--log-file` | 저장소의 `runtime/logs/agent.log` |
 | `--live` | 지속 수집·전송. 생략하면 등록 확인 후 종료 |
+| `--enable-process-control` | TLS·토큰·live 모드에서 프로세스 목록·종료 명령 활성화. 기본 비활성 |
+| `--protect-process NAME.exe` | 추가 보호할 프로세스 이름. 여러 번 지정 가능 |
+| `--heartbeat-interval` | 기본 0(기존 서버 호환). 지원 서버에서 5로 지정하면 5초마다 전송. 등록 응답의 `heartbeat_interval` 값이 우선 |
 
 기존 수동 PC ID를 계속 사용하려면 동일한 `--pc-id`를 계속 지정합니다. ID 자동 저장 방식으로 전환하면 이전 수동 ID와 다른 PC로 등록될 수 있습니다.
 
@@ -112,6 +115,8 @@ GUI에 세 행이 나타나는지, 하나를 종료해도 나머지가 유지되
 
 ## 문제 해결
 
+프로세스 목록 조회·보호 종료는 [프로세스 제어 안내](process-control.md)를 참조하세요. PC 종료·재부팅과 프로그램 시작 기능은 아직 없습니다.
+
 | 증상 | 확인할 것 |
 |---|---|
 | `python`을 찾지 못함 | Python 설치 후 터미널 재실행 또는 설치 경로의 python.exe 사용 |
@@ -138,4 +143,16 @@ GUI에 세 행이 나타나는지, 하나를 종료해도 나머지가 유지되
 
 B가 인계할 것: [측정 규격](metrics-spec.md), 재접속 결과, Agent 실행 명령, null 처리와 PC ID 유지 방법. 테스트용 PC ID 예시 외 실제 PC ID·호스트 이름이 든 로그는 공유 전에 검토합니다.
 
-A에게 받을 것: EC2 주소·포트, 신뢰할 CA·서버 이름, PC ID에 매핑한 토큰, 등록 응답 규격, Heartbeat 규격. TLS·토큰 인증 요청은 구현되어 있으며 Heartbeat·원격 제어·Windows 부팅 자동 실행은 아직 없습니다. `smoke_tls`는 OpenSSL(PATH 또는 Git for Windows)을 사용해 임시 인증서를 생성하고 TLS 등록·토큰 거절·실제 측정값·연결 복구 후 재인증을 확인합니다.
+A에게 받을 것: EC2 주소·포트, 신뢰할 CA·서버 이름, PC ID에 매핑한 토큰, 등록 응답 규격, Heartbeat 지원 확인. TLS·토큰 인증과 선택적 Heartbeat 전송, 선택적 프로세스 조회·보호 종료 명령은 구현되어 있습니다. PC 종료·재부팅·Windows 부팅 자동 실행은 아직 없습니다. `smoke_tls`는 OpenSSL(PATH 또는 Git for Windows)을 사용해 임시 인증서를 생성하고 TLS 등록·토큰 거절·Heartbeat/ACK·실제 측정값·연결 복구 후 재인증을 확인합니다.
+
+## 2주차 Heartbeat와 인계
+
+상세 계약과 A·C 인계 항목은 [B 담당 2주차 결과](week2-b-handoff.md)를 따릅니다.
+
+- 기존 로컬 서버는 HEARTBEAT를 받지 않습니다. 해당 서버에는 기본 옵션(0)을 유지합니다.
+- 지원 서버는 REGISTER_RESULT에 `heartbeat_interval: 5`를 포함해 전송을 켤 수 있습니다. 매번 재등록할 때 설정을 다시 적용합니다.
+- 서버가 해당 필드를 생략하면 CLI의 `--heartbeat-interval`을 사용합니다. A가 수신 처리를 완료했다고 확인한 서버에만 `--heartbeat-interval 5`를 추가합니다.
+- 유효한 간격은 0 또는 1~60초입니다. 15초 타임아웃 서버에는 5초를 사용합니다. 서버가 0을 보내면 비활성화합니다.
+- Heartbeat는 수집과 다른 스레드에서 전송합니다. METRICS와 HEARTBEAT는 같은 송신 잠금을 사용해 프레임을 보존합니다.
+- ACK는 선택 사항이며 `HEARTBEAT_ACK`와 등록된 `pc_id`가 일치할 때 수신합니다. ACK 자체의 응답 제한 시간은 구현하지 않았습니다. 전송 실패·소켓 종료·읽기 시간 초과 때 연결을 정리하고 재접속합니다.
+- 서버의 15초 오프라인 판정과 GUI 반영은 A·C가 담당하며, Agent 구현만으로 완료된 것으로 표시하지 않습니다.
