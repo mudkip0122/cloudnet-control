@@ -74,9 +74,10 @@ class ProcessClient:
     Results are lossless; the dashboard's latest-only metric queue is not used.
     Commands are never automatically resent after disconnection.
     """
-    def __init__(self, host, port, context, token, timeout=15):
+    def __init__(self, host, port, context, token, timeout=15, server_name=None):
         self.host, self.port, self.context, self.token = host, port, context, token
         self.timeout = timeout
+        self.server_name = server_name
         self.jobs = queue.Queue()
         self.results = queue.Queue()
         self.stop = threading.Event()
@@ -109,7 +110,7 @@ class ProcessClient:
     def execute(self, request):
         if self.context is None or not self.token:
             raise ValueError("프로세스 제어에는 TLS 관리자 인증이 필요합니다")
-        with connect(self.host, self.port, self.context) as conn:
+        with connect(self.host, self.port, self.context, self.server_name) as conn:
             self.sock = conn
             try:
                 if self.stop.is_set():

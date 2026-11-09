@@ -38,7 +38,7 @@ class AdminConnectionTests(unittest.TestCase):
                 self.assertNotIn(dashboard.token, text)
 
     def test_role_token_authorization_and_initial_snapshot(self):
-        state = MonitoringServer("admin-secret", "agent-secret")
+        state = MonitoringServer({"admin_token": "admin-secret", "agents": {"pc": "agent-secret"}})
         for token, expected in (("agent-secret", "ERROR"), ("admin-secret", "REGISTER_RESULT")):
             client, peer = socket.socketpair()
             with client, peer:

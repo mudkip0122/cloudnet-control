@@ -10,17 +10,18 @@ from tkinter import ttk, messagebox
 import customtkinter as ctk
 
 from common.protocol import recv_message, send_message
-from common.security import client_settings, connect
+from common.security import client_arguments, client_settings, connect
 from admin_gui.presentation import device_view
 from admin_gui.charts import LiveCharts, MetricHistory
 from admin_gui.process_window import ProcessWindow
 
 
 class Dashboard:
-    def __init__(self, root, port, host="127.0.0.1", context=None, token=None, sample=False):
+    def __init__(self, root, port, host="127.0.0.1", context=None, token=None, server_name=None, sample=False):
         self.root = root
         self.port = port
         self.host, self.context, self.token = host, context, token
+        self.server_name = server_name
         self.sample = sample
         self.sample_now = datetime.now(timezone.utc) if sample else None
         self.auth_state = "확인 전" if context else "미사용"
@@ -118,7 +119,7 @@ class Dashboard:
     def receive(self):
         while not self.stop.is_set():
             try:
-                with connect(self.host, self.port, self.context) as conn:
+                with connect(self.host, self.port, self.context, getattr(self, "server_name", None)) as conn:
                     self.sock = conn
                     if self.stop.is_set():
                         return
@@ -128,6 +129,7 @@ class Dashboard:
                     send_message(conn, request)
                     response = recv_message(conn)
                     if response.get("code") == "UNAUTHORIZED" or (
+                            response.get("type") == "ERROR" and response.get("message") == "Authentication failed") or (
                             response.get("type") == "REGISTER_RESULT" and response.get("ok") is False):
                         self.publish((False, "인증 실패 · 관리자 토큰을 확인한 뒤 다시 실행하세요"))
                         return
@@ -288,16 +290,14 @@ class Dashboard:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=5000)
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--ca-file")
-    parser.add_argument("--token-file")
+    client_arguments(parser)
     args = parser.parse_args()
     try:
         context, token = client_settings(args)
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
     root = ctk.CTk()
-    Dashboard(root, args.port, args.host, context, token)
+    Dashboard(root, args.port, args.host, context, token, args.server_name)
     root.mainloop()
 
 

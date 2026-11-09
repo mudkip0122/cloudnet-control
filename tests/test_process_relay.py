@@ -10,7 +10,7 @@ from tests.test_gui_processes import page
 
 class ProcessRelayTests(unittest.TestCase):
     def setUp(self):
-        self.state = MonitoringServer("admin-token", "agent-token")
+        self.state = MonitoringServer({"admin_token": "admin-token", "agents": {"pc": "agent-token"}})
         self.admin = Mock(spec=ssl.SSLSocket)
         self.agent = Mock(spec=ssl.SSLSocket)
         self.state.sessions["pc"] = self.agent

@@ -1,5 +1,7 @@
 # B 담당 — Windows Agent 실행 및 인계
 
+현재 서버는 `13.238.97.144:5000`, 기존 인증서 검증 이름은 `32.236.13.91`입니다. 이 작업자의 PC-03 실행·확인 기록은 [PC-03 접속 안내](pc03-connection.md)에 있습니다.
+
 ## 설치
 
 PowerShell에서 저장소 루트로 이동하고 Python 3.11 이상으로 준비합니다.
@@ -44,6 +46,7 @@ Agent가 등록되고 2초마다 CPU·RAM·네트워크 값이 전송됩니다. 
 | 옵션 | 기본값·동작 |
 |---|---|
 | `--host` | `127.0.0.1` |
+| `--server-name` | 연결 IP와 다른 기존 인증서 이름을 검증할 때 지정 |
 | `--port` | `5000` |
 | `--ca-file` | 신뢰할 서버 인증서 또는 CA PEM 파일. 토큰 파일과 함께 지정 |
 | `--token-file` | 해당 Agent의 토큰 텍스트 파일. 파일 내용은 로그에 출력하지 않음 |
@@ -82,16 +85,16 @@ Agent가 등록되고 2초마다 CPU·RAM·네트워크 값이 전송됩니다. 
 ### 실행
 
 ```powershell
-.\.venv\Scripts\python.exe -m agent.main --host 13.238.97.144 --port 5000 --ca-file secrets/server.crt --token-file secrets/agent-token.txt --server-name 32.236.13.91 --pc-id PC-03 --live
+.\.venv\Scripts\python.exe -m agent.main --host 13.238.97.144 --server-name 32.236.13.91 --port 5000 --ca-file secrets/server.crt --token-file secrets/agent-token.txt --pc-id PC-02 --live
 ```
 
 등록만 확인하려면 `--live`를 생략합니다. 다른 PC에는 해당 PC의 ID와 토큰을 사용합니다. 서버가 토큰을 `PC-02`에 매핑했다면 자동 생성 UUID 대신 `--pc-id PC-02`를 지정해야 합니다.
 
 - 외부 연결은 `--ca-file`과 `--token-file`이 모두 필요합니다. 로컬 개발용 평문 TCP는 두 옵션을 모두 생략합니다.
-- TLS 1.2 이상을 사용하며 CA·인증서 유효성·서버 이름을 검증합니다. IP로 접속하면 인증서에 해당 IP가 포함되어야 합니다.
+- TLS 1.2 이상을 사용하며 CA·인증서 유효성·서버 이름을 검증합니다. `--server-name`을 지정하면 해당 이름으로 검증하고, 생략하면 접속 주소로 검증합니다.
 - TLS 연결 후 기존 `REGISTER` 메시지에 `token`을 추가합니다. `REGISTER_RESULT`의 성공 여부와 응답 PC ID를 확인합니다.
 - 인증서 검증 실패·TLS 프로토콜 오류·등록 거절은 종료 코드 2로 종료합니다. 연결 단절은 다시 TLS 연결·등록을 수행하며 재접속 간격과 ID 유지·로그 정책은 그대로입니다.
-- 현재 저장소의 서버·GUI는 여전히 로컬용입니다. Agent의 EC2 접속 지원이 로컬 서버·GUI의 TLS 지원을 의미하지는 않습니다.
+- 서버·GUI도 TLS·PC별 토큰 인증을 지원합니다. 프로세스 GUI 연동 조건은 [GUI 프로세스 안내](gui-process-control.md)를 참고하세요.
 
 ## 재접속·로그
 

@@ -37,7 +37,7 @@ def main():
             while time.monotonic() < deadline:
                 root.update()
                 children = dashboard.table.get_children()
-                if children and dashboard.table.item(children[0], "values")[2] != "—":
+                if children and dashboard.usage_values["cpu"].get() != "—":
                     break
                 time.sleep(0.05)
             else:

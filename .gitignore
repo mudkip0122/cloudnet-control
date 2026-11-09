@@ -6,6 +6,7 @@ __pycache__/
 venv/
 build/
 dist/
+/cloudnet-upstream.zip
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/

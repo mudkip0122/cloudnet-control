@@ -35,7 +35,7 @@ def main():
         token.write_text("test-agent-token", encoding="ascii")
         tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         tls.load_cert_chain(cert, key)
-        state = MonitoringServer("test-admin-token", "test-agent-token")
+        state = MonitoringServer({"admin_token": "test-admin-token", "agents": {"process-gui-test": "test-agent-token"}})
         stopping = threading.Event()
         listener = socket.socket()
         listener.bind(("127.0.0.1", 0))

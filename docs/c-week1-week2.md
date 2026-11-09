@@ -122,23 +122,23 @@ DNS·TCP 연결 또는 TLS 핸드셰이크 중 닫으면 해당 연결 시도의
 .\.venv\Scripts\python.exe -m admin_gui.main
 ```
 
-TLS 실행 예시입니다. `server.example.com`은 인증서 SAN에 포함된 실제 서버 주소로 바꾸세요.
+TLS 실행 예시입니다. 탄력적 IP `13.238.97.144`에 연결하고 기존 인증서 이름 `32.236.13.91`로 검증합니다.
 서버 인증서·개인키는 서버에서만 사용합니다. GUI에는 CA와 관리자 토큰, Agent에는 CA와 별도의 Agent 토큰을 배포합니다.
 
 ```powershell
-# 서버: 서로 다른 두 토큰 파일 필요
-.\.venv\Scripts\python.exe -m server.main --host 0.0.0.0 --port 5000 --cert-file secrets/server.pem --key-file secrets/server.key --admin-token-file secrets/admin-token.txt --agent-token-file secrets/agent-token.txt
+# 서버: 기존 인증서·개인키·PC별 토큰 매핑 auth.json 사용 (재발급 불필요)
+.\.venv\Scripts\python.exe -m server.main --host 0.0.0.0 --port 5000 --tls-cert secrets/server.pem --tls-key secrets/server.key --auth-file secrets/auth.json
 
 # 관리자 PC
-.\.venv\Scripts\python.exe -m admin_gui.main --host 3.26.40.204 --port 5000 --ca-file secrets/ca.pem --token-file secrets/admin-token.txt
+.\.venv\Scripts\python.exe -m admin_gui.main --host 13.238.97.144 --server-name 32.236.13.91 --port 5000 --ca-file secrets/ca.pem --token-file secrets/admin-token.txt
 
 # 각 Agent PC (PC마다 고유 ID)
-.\.venv\Scripts\python.exe -m agent.main --host 3.26.40.204 --port 5000 --ca-file secrets/ca.pem --token-file secrets/agent-token.txt --live --pc-id pc-001
+.\.venv\Scripts\python.exe -m agent.main --host 13.238.97.144 --server-name 32.236.13.91 --port 5000 --ca-file secrets/ca.pem --token-file secrets/agent-token.txt --live --pc-id pc-001
 ```
 
 ## 사용자가 추가로 준비할 것
 
-- [ ] A에게 서버 주소·포트와 CA 인증서를 받고 인증서 SAN과 접속 주소가 일치하는지 확인.
+- [ ] A에게 서버 주소·포트와 CA 인증서 및 검증할 서버 이름을 확인 (현재 접속 IP와 인증서 이름은 서로 다름).
 - [ ] 서로 다른 관리자·Agent 토큰 파일을 준비하고 해당 역할에만 배포. 개인키와 토큰은 `secrets/`에 두고 Git에 올리지 않기.
 - [ ] A와 서버 포트 접근 범위 및 이 문서의 인증·목록 규격 확인.
 - [ ] B와 단위·주기 확인 후 실제 PC 3대로 접속·해제·서버 재시작 검증.

@@ -21,10 +21,10 @@ GUI·서버·Agent의 TLS 연결과 역할별 인증이 필요합니다.
 Agent에는 추가로 `--enable-process-control`을 지정합니다.
 
 ```powershell
-.\.venv\Scripts\python.exe -m agent.main --host 3.26.40.204 --port 5000 --ca-file secrets/server.crt --token-file secrets/agent-token.txt --pc-id PC-02 --live --enable-process-control
+.\.venv\Scripts\python.exe -m agent.main --host 13.238.97.144 --server-name 32.236.13.91 --port 5000 --ca-file secrets/server.crt --token-file secrets/agent-token.txt --pc-id PC-03 --live --enable-process-control
 ```
 
-CA 파일은 실제 배포된 인증서 체인과 일치해야 하고 서버 인증서에는 접속 IP 또는 이름이 포함되어야 합니다.
+CA 파일은 실제 배포된 인증서 체인과 일치해야 합니다. 탄력적 IP에 연결하면서 기존 인증서 이름을 유지하므로 `--server-name 32.236.13.91`을 지정합니다. GUI도 같은 옵션을 지원하며 프로세스 전용 연결에도 전달합니다.
 현재 변경은 로컬 코드와 임시 TLS 통합 검증 범위이며, EC2에 배포하거나 실제 사용자 앱을 종료하지 않았습니다.
 
 ## 메시지와 동작
@@ -46,7 +46,7 @@ Tk 위젯·확인창은 메인 스레드에서만 갱신합니다. 창 종료 �
 `server/main.py`에 TLS 관리자 명령을 활성 TLS Agent로 전달하고 결과를 요청한 관리자에게만 반환하는 중계를 추가했습니다.
 송신 잠금으로 프레임이 섞이지 않도록 하고 PC ID·Agent 세션·명령 ID를 확인합니다.
 명령 ID는 60초간 중복을 제한하며 관리자 단절 시 대기 명령을 제거합니다.
-현재 역할별 토큰 인증을 사용합니다. PC별 토큰 매핑·영속 감사 기록은 A의 배포 서버와 별도 통합이 필요합니다.
+A의 PC별 Agent 토큰 매핑과 별도 관리자 토큰 인증을 유지합니다. 서버 실행은 `--tls-cert`·`--tls-key`·`--auth-file`을 사용합니다. 영속 감사 기록은 후속 작업입니다.
 
 ## 검증
 

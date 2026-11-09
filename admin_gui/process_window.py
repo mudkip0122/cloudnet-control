@@ -109,7 +109,8 @@ class ProcessWindow:
     def submit(self, request):
         if self.client is None:
             d = self.dashboard
-            self.client = ProcessClient(d.host, d.port, d.context, d.token)
+            self.client = ProcessClient(d.host, d.port, d.context, d.token,
+                                        server_name=getattr(d, "server_name", None))
         self.pending = request
         self.pending_generation = self.generation
         self.client.submit(request)
