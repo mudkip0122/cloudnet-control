@@ -82,7 +82,7 @@ Agent가 등록되고 2초마다 CPU·RAM·네트워크 값이 전송됩니다. 
 ### 실행
 
 ```powershell
-.\.venv\Scripts\python.exe -m agent.main --host 32.236.13.91 --port 5000 --ca-file secrets/server.crt --token-file secrets/agent-token.txt --pc-id PC-02 --live
+.\.venv\Scripts\python.exe -m agent.main --host 13.238.97.144 --port 5000 --ca-file secrets/server.crt --token-file secrets/agent-token.txt --server-name 32.236.13.91 --pc-id PC-03 --live
 ```
 
 등록만 확인하려면 `--live`를 생략합니다. 다른 PC에는 해당 PC의 ID와 토큰을 사용합니다. 서버가 토큰을 `PC-02`에 매핑했다면 자동 생성 UUID 대신 `--pc-id PC-02`를 지정해야 합니다.

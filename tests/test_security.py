@@ -19,7 +19,7 @@ class ClientSecurityTests(unittest.TestCase):
     def test_plaintext_local_and_remote_requirement(self):
         self.assertEqual(client_settings(self.args()), (None, None))
         with self.assertRaises(ValueError):
-            client_settings(self.args(host="32.236.13.91"))
+            client_settings(self.args(host="3.26.40.204"))
 
     def test_credentials_must_be_supplied_together_and_nonempty(self):
         with tempfile.TemporaryDirectory() as folder:
