@@ -68,6 +68,8 @@ Agent가 전송한 CPU·RAM 값이 서버를 거쳐 관리자 GUI에 표시되�
 
 ## 문서
 
+- [A 담당 1주차 운영 마감·AWS 설정·종료 절차](docs/week1-operations.md)
+
 - [A 담당 서버 2주차 구현·검증·인계](docs/server-week2.md)
 
 - [더블클릭으로 EC2·서버·GUI 실행 및 종료](docs/launcher.md)
