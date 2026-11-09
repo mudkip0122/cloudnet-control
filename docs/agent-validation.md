@@ -1,4 +1,4 @@
-> ?? ?? ??? IP: `3.26.40.204`. ??? ?? IP ?? ??? ?? ?? ????, ? IP? ?? ??? ???? ????.
+> 현재 접속 IP: 13.238.97.144, TLS 인증서 검증 식별자: 32.236.13.91. 과거 IP는 당시 검증 기록입니다.
 
 # B 담당 로컬 검증 기록
 
@@ -58,3 +58,20 @@ PC 세 개 검증은 **한 PC에서 실행한 Agent 프로세스 3개**입니다
 - `python -m tests.smoke_tls` 재통과. 기존 TLS 등록·Heartbeat·실제 측정값·재접속·재인증 동작을 유지했습니다.
 - 실제 조회는 수백 개의 프로세스를 열거해 접근할 수 없는 항목도 null·보호 상태로 반환하는 것을 확인했습니다. 조회 시 Agent 조상 정보는 한 번 수집하고, 종료 시에는 새로 검증합니다.
 - A 서버의 관리자 권한 검증·명령 중계와 C GUI 연동, 실제 EC2 경유 프로세스 제어는 아직 수행하지 않았습니다. 구현 계약은 [프로세스 제어 안내](process-control.md)에 있습니다.
+
+## Elastic IP와 TLS 검증 식별자 분리 (2026-11-09)
+
+- `--server-name` 추가. TCP 연결 주소와 TLS 인증서 검증 식별자를 분리하며 check_hostname·CERT_REQUIRED·TLS 최소 버전은 유지합니다. 옵션 생략 시 기존 host 검증 동작을 유지합니다.
+- 전체 단위 테스트 42개 통과. 연결 주소·검증 식별자 전달, 인증서 검증 유지, 잘못된 이름·평문 설정 거절 추가 검증. 기존 `tests.smoke_tls`도 통과했습니다.
+- A의 안내에 따라 host=`13.238.97.144`, server-name=`32.236.13.91`, PC ID=`PC-02`, 기존 CA·토큰으로 실제 EC2 등록 성공(14:43 KST, 종료 코드 0).
+- 이어 live Agent를 백그라운드로 시작하고 Registered·Metric transmission started 로그 확인. 원격 프로세스 제어는 비활성 상태입니다. 로그는 `runtime/logs/pc02-live.log`, 실행 PID는 `runtime/pc02-agent.pid`에 기록했습니다.
+- 이는 해당 시점의 Agent 등록·전송 시작 확인이며 서버 저장·관리자 GUI 표시, 실제 3대·Heartbeat 타임아웃·EC2 재시작 복구 완료를 뜻하지 않습니다.
+
+## A·C 최신 코드 동기화 및 B 접속·제어 재확인 (2026-11-09)
+
+- A의 서버 전용 배포 기록 커밋 `6f23f92`까지 반영했습니다. Agent 수정 책임을 B로 분리한 원복 이후, B가 `--server-name`을 명시적으로 지원하고 connect에 전달하도록 반영했습니다. 잘못된 TLS 이름·평문에서의 옵션 사용은 거절하며 검증은 유지합니다.
+- 동기화 후 단위·서버 통합 테스트 총 89개 통과, `tests.smoke_tls`도 통과했습니다. 재접속 시 지정한 server-name이 다시 전달되는 회귀 검증을 포함합니다.
+- 전달받은 PC-02 관리자 인증정보로 실제 EC2에 인증하고 조회했습니다. PC-02는 `--enable-process-control`로 실행 중이며 PROCESS_LIST·404행을 완전히 수신했습니다. 이는 해당 조회 시점의 행 수입니다.
+- 같은 경로의 PC-01·PC-03 조회는 모두 PROCESS_CONTROL_DISABLED였습니다. 각 PC에서 재실행해야 하며 원격 활성화나 실제 프로세스 종료는 수행하지 않았습니다.
+- `Start PC-01 Process Control.cmd`, `Start PC-03 Process Control.cmd`를 추가했습니다. 각 PC의 프로젝트 폴더에서 기존 Agent를 중지한 뒤 해당 파일을 실행합니다. 인증정보는 포함하지 않으며 기존 PC별 파일을 사용합니다.
+- A의 배포·세 PC 온라인·PC-01 단절 격리 기록은 `docs/server-week2.md`, C의 GUI 연동·임시 TLS 검증 기록은 `docs/c-ui-handoff.md`를 참조합니다. 팀원 기록과 B가 직접 수행한 조회는 구분합니다.

@@ -205,7 +205,7 @@ def main():
     parser.add_argument("--id-file", type=Path, default=DEFAULT_ID_FILE)
     parser.add_argument("--pc-name", default=socket.gethostname())
     parser.add_argument("--host", default="127.0.0.1", help="Server hostname or IP")
-    parser.add_argument("--server-name", help="Certificate identity to verify when the connection IP changes")
+    parser.add_argument("--server-name", help="Expected TLS certificate identity; defaults to --host")
     parser.add_argument("--port", type=int, default=5000)
     parser.add_argument("--ca-file", type=Path, help="Trusted server certificate/CA PEM")
     parser.add_argument("--token-file", type=Path, help="File containing this Agent's secret token")

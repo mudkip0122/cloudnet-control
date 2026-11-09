@@ -73,6 +73,21 @@ class ClientSecurityTests(unittest.TestCase):
                 connection.assert_called_once()
                 sleep.assert_not_called()
 
+    def test_separate_connection_address_and_verified_identity(self):
+        conn, context = Mock(), ssl.create_default_context()
+        with patch("common.security.socket.create_connection", return_value=conn) as create, \
+             patch.object(context, "wrap_socket", return_value=conn) as wrap:
+            self.assertIs(connect("13.238.97.144", 5000, context, "32.236.13.91"), conn)
+        create.assert_called_once_with(("13.238.97.144", 5000), timeout=5)
+        wrap.assert_called_once_with(conn, server_hostname="32.236.13.91")
+        self.assertTrue(context.check_hostname)
+        self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+
+    def test_server_name_requires_tls_and_valid_value(self):
+        for name in ("", " ", "bad name", "bad\x00name", "x" * 254, "32.236.13.91"):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                client_settings(self.args(server_name=name))
+
     def test_tls_disconnect_reconnects_and_registers_again(self):
         context = Mock()
         conn = Mock()
@@ -83,8 +98,9 @@ class ClientSecurityTests(unittest.TestCase):
              patch("agent.main.register") as registration, \
              patch("agent.main.stream", side_effect=[ssl.SSLEOFError("closed"), RegistrationError("stop test")]), \
              patch("agent.main.time.sleep") as sleep:
-            self.assertEqual(run(self.args(), context), 2)
+            self.assertEqual(run(self.args(server_name="32.236.13.91"), context), 2)
         self.assertEqual(create.call_count, 2)
         self.assertEqual(registration.call_count, 2)
         sleep.assert_called_once_with(3)
         self.assertEqual(create.call_args.args[2], context)
+        self.assertEqual(create.call_args.args[3], "32.236.13.91")

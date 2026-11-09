@@ -70,12 +70,16 @@ Windows 통합 테스트는 자신이 시작한 프로세스 트리를 taskkill�
 B의 PC 실행 명령(기존에 받은 PC-02 토큰 사용):
 
 ```powershell
-.\.venv\Scripts\python.exe -m agent.main --host 32.236.13.91 --port 5000 --ca-file secrets/server.crt --token-file secrets/agent-token.txt --pc-id PC-02 --live
+.\.venv\Scripts\python.exe -m agent.main --host 13.238.97.144 --port 5000 --ca-file secrets/server.crt --token-file secrets/agent-token.txt --server-name 32.236.13.91 --pc-id PC-02 --live
 ```
 
-위 IP는 기존 배포 정보이며 현재 유효한 주소인지는 A가 확인해야 합니다. 다른 PC에는 해당 PC의 ID와 토큰을 사용합니다. 인증정보·runtime 폴더를 다른 PC에 그대로 복사하지 않습니다.
+접속 IP는 A가 안내한 탄력적 IP이고 server-name은 기존 인증서의 검증 식별자입니다. TLS 검증은 유지합니다. 다른 PC에는 해당 PC의 ID와 토큰을 사용합니다. 인증정보·runtime 폴더를 다른 PC에 그대로 복사하지 않습니다.
 
 ## 현재 EC2 확인 결과
+
+최신 통합 재확인: A·C main 변경을 동기화한 뒤 PC-02 관리자 인증정보로 서버를 경유해 조회했습니다. PC-02는 PROCESS_LIST(404행) 성공, PC-01·PC-03은 PROCESS_CONTROL_DISABLED 응답입니다. PC-02는 TLS·프로세스 제어 활성 상태로 실행 중입니다. A의 실제 배포·다중 PC 수신 기록은 `docs/server-week2.md`, C의 GUI 연동 기록은 `docs/c-ui-handoff.md`에 있습니다. 실제 프로세스 종료는 이번 운영 확인에서 수행하지 않았습니다.
+
+최신 성공: 2026-11-09 14:43 KST, A의 탄력적 IP `13.238.97.144:5000`과 기존 인증서·토큰, `--server-name 32.236.13.91`로 PC-02 등록 성공(종료 코드 0). 이어 live Agent를 시작해 등록과 Metric transmission started 로그를 확인했습니다. 이는 PC-02의 연결·전송 시작 확인이며, 서버 DB·관리자 GUI 수신·실제 PC 3대 동시 접속·장애 복구 검증은 별도입니다. 로그: `runtime/logs/pc02-live.log`.
 
 최신 확인: 2026-11-09 14:20 KST, 새 주소 `3.26.40.204:5000`에서는 TCP 연결이 성립했으나 TLS 검증 결과 `IP address mismatch`가 확인됐습니다. 기존 인증서는 새 IP에 유효하지 않아 PC-02 등록·토큰 인증·측정 전송은 수행하지 못했습니다. A가 고정 주소를 확정하고 일치하는 인증서를 적용·배포하면 B가 재검증합니다. Elastic IP 적용은 아직 확인하지 않았습니다.
 

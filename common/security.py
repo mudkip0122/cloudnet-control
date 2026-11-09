@@ -21,6 +21,10 @@ def client_arguments(parser):
 
 
 def client_settings(args):
+    server_name = getattr(args, "server_name", None)
+    if server_name is not None and (not server_name.strip() or len(server_name) > 253
+                                    or any(c.isspace() or c == "\x00" for c in server_name)):
+        raise ValueError("Invalid TLS server name")
     token = Path(args.token_file).read_text(encoding="utf-8").strip() if args.token_file else None
     if args.token_file and not token:
         raise ValueError("Token file is empty")
@@ -28,6 +32,8 @@ def client_settings(args):
         raise ValueError("Use --ca-file and --token-file together")
     if not loopback(args.host) and not args.ca_file:
         raise ValueError("Remote connections require --ca-file and --token-file")
+    if server_name is not None and not args.ca_file:
+        raise ValueError("--server-name requires TLS settings")
     context = ssl.create_default_context(cafile=args.ca_file) if args.ca_file else None
     if context:
         context.minimum_version = ssl.TLSVersion.TLSv1_2
