@@ -6,6 +6,7 @@ __pycache__/
 venv/
 build/
 dist/
+/cloudnet-upstream.zip
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -42,3 +43,7 @@ logs/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Local presentation files
+/output/presentation/
+/presentation_84958089.pdf

@@ -1,5 +1,7 @@
 # CloudNet Control
 
+현재 EC2 탄력적 IP: **13.238.97.144**. 기존 인증서와 PC별 토큰을 유지하며, 접속 시 `--host 13.238.97.144 --server-name 32.236.13.91`을 사용합니다. [현재 실행 순서](docs/ec2-direct.md)를 확인하세요.
+
 AWS EC2 기반 TCP/TLS 통신으로 Windows PC의 상태를 모니터링하고, 인증된 관리자 명령으로 테스트 PC를 종료·재부팅하는 3인 팀 프로젝트입니다.
 
 Agent의 실제 CPU·RAM·네트워크 값을 서버를 거쳐 GUI에 표시합니다. GUI에는 PC별 상세 정보, CPU·RAM 표시 카드와 네트워크 그래프가 있습니다. 로컬 실행은 [실시간 실행 안내](docs/live-monitoring.md), EC2 직접 연결과 TLS·PC별 인증은 [EC2 배포 안내](docs/ec2-direct.md)를 따르세요.

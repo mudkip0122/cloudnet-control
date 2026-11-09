@@ -1,5 +1,7 @@
 # CloudNet 통신 규격 — 서버 2주차
 
+프로세스 조회·보호 종료 확장(2026-11-09)의 COMMAND/COMMAND_RESULT 필드와 TLS 활성화 조건은 [프로세스 제어 규격](process-control.md)을 참조하세요. 아래 로컬 서버에는 해당 명령 라우팅을 추가하지 않았습니다.
+
 ## 구현 범위
 
 Agent/Admin 등록·인증, TLS, 중복 ID 거절, 측정값 수신, 관리자 목록 조회, Heartbeat와 선택적 상태 알림을 지원합니다. 인증 없는 평문 연결은 루프백 개발에만 허용합니다. 외부 바인딩은 TLS 인증서·개인키·인증 파일을 모두 요구합니다. 실행 방법은 [EC2 안내](ec2-direct.md)를 참고하세요.
@@ -44,6 +46,8 @@ Agent는 5초마다 `{"type":"HEARTBEAT","pc_id":"example-pc-b-001"}`을 보낼 
 
 ## 현재 관리자 조회 흐름
 
+EC2 TLS 모드에서는 Agent와 관리자 모두 인증서·서버 이름을 검증하고 REGISTER에 각 역할의 토큰을 포함합니다. 루프백 개발 모드에서만 TLS·토큰 없이 등록할 수 있습니다.
+
 관리자는 `{"type":"REGISTER","role":"admin"}`으로 등록하고 `{"type":"REGISTER_RESULT","ok":true}`를 받습니다. 이후 1초마다 `{"type":"LIST_DEVICES"}`를 요청합니다.
 
 응답 예시:
@@ -75,3 +79,7 @@ Agent는 5초마다 `{"type":"HEARTBEAT","pc_id":"example-pc-b-001"}`을 보낼 
 | 연결 생존 확인 | `HEARTBEAT` | 등록 PC ID, 권장 5초 주기·기본 15초 타임아웃 |
 
 위 흐름은 서버에 구현되어 있습니다. 현재 GUI는 호환성을 위해 목록 주기 조회를 유지합니다. 이력 조회·원격 명령은 2주차 범위에 포함하지 않습니다.
+
+## Agent Heartbeat ???
+
+?? Agent? ??? 0?? ?? Heartbeat? ???. ?? ???? `--heartbeat-interval 5`? ???? ? ????. ??? REGISTER_RESULT? heartbeat_interval? ???? ?? ?? CLI?? ???? ????? ?? ?????. ?? ??? ? ??? ??? ??? ACK? ??? ????. ?? 2? METRICS???? ?? 15? ?? ??? ?????.

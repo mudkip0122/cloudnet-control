@@ -200,7 +200,7 @@ class ExternalConfigurationTests(unittest.TestCase):
         result = subprocess.run([sys.executable, "-m", "agent.main", "--host", "192.0.2.1", "--pc-id", "test"],
                                 capture_output=True, text=True, timeout=5)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("require --ca-file", result.stderr)
+        self.assertIn("--ca-file and --token-file together", result.stderr)
 
 
 if __name__ == "__main__":
