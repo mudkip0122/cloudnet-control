@@ -24,6 +24,8 @@ RESULTS = {
     "PID_REUSED": "PID의 생성 시각이 변경되었습니다",
     "NOT_FOUND": "이미 종료된 프로세스입니다",
     "ACCESS_DENIED": "프로세스 접근 권한이 없습니다",
+    "PROCESS_ERROR": "운영체제에서 프로세스를 처리하는 중 오류가 발생했습니다",
+    "INVALID_IDENTITY": "PID 또는 생성 시각 정보가 올바르지 않습니다",
     "PROCESS_CONTROL_DISABLED": "Agent의 프로세스 제어가 비활성화되어 있습니다",
     "TARGET_OFFLINE": "대상 PC가 오프라인입니다",
     "TLS_REQUIRED": "TLS 관리자 인증 연결이 필요합니다",
@@ -49,6 +51,10 @@ class ProcessWindow:
         self.client = None
         self.generation = 0
         self.pending_generation = None
+        self.sort_column = "pid"
+        self.sort_descending = False
+        self.column_titles = {}
+        self.last_stop = None
         self.target_text = tk.StringVar(value="PC를 선택하세요")
         self.status = tk.StringVar(value="목록을 새로고침하세요")
         self.outcome = tk.StringVar(value="")
@@ -61,13 +67,16 @@ class ProcessWindow:
         for key, title, width in zip(columns,
                 ("PID", "이름", "사용자", "메모리 (MiB)", "종료 가능", "보호 이유"),
                 (70, 180, 180, 110, 90, 260)):
-            self.table.heading(key, text=title)
+            self.column_titles[key] = title
+            self.table.heading(key, text=title, command=lambda column=key: self.sort_by(column))
             self.table.column(key, width=width, minwidth=60)
         scroll = ttk.Scrollbar(container, orient="vertical", command=self.table.yview)
         self.table.configure(yscrollcommand=scroll.set)
         scroll.pack(side="right", fill="y")
         self.table.pack(fill="both", expand=True)
         self.table.bind("<<TreeviewSelect>>", lambda event: self.update_buttons())
+        ttk.Label(self.window, text="열 제목 클릭: 오름차순 / 내림차순 · 종료는 선택한 PID 하나에만 적용됩니다",
+                  wraplength=1000).pack(anchor="w", padx=12)
         actions = ttk.Frame(self.window)
         actions.pack(fill="x", padx=12, pady=8)
         self.refresh_button = ttk.Button(actions, text="새로고침", command=self.refresh)
@@ -89,12 +98,44 @@ class ProcessWindow:
                 self.table.delete(item)
             self.status.set("대상 변경 · 전체 목록을 새로고침하세요" if online else "연결된 PC를 선택하세요")
             self.outcome.set("")
+            self.last_stop = None
         self.target, self.online = target, online
         self.target_text.set(f"대상 PC: {target[1]} / {target[0]}" if target else "PC를 선택하세요")
         self.update_buttons()
 
     def authorized(self):
         return self.dashboard.context is not None and bool(self.dashboard.token)
+
+    def sort_by(self, column):
+        if column not in self.column_titles:
+            return
+        self.sort_descending = not self.sort_descending if self.sort_column == column else False
+        self.sort_column = column
+        self.apply_sort()
+
+    def apply_sort(self):
+        def value(key):
+            row = self.rows[key]
+            if self.sort_column == "memory":
+                return row.get("memory_bytes")
+            if self.sort_column == "protected_reason":
+                reason = row.get("protected_reason")
+                return PROTECTION_REASONS.get(reason, reason)
+            return row.get(self.sort_column)
+
+        keys = list(self.table.get_children())
+        available = [key for key in keys if value(key) is not None and value(key) != ""]
+        missing = [key for key in keys if value(key) is None or value(key) == ""]
+        # PID is a stable tie breaker; missing values stay at the end in both directions.
+        available.sort(key=lambda key: self.rows[key]["pid"])
+        available.sort(key=lambda key: value(key).casefold() if isinstance(value(key), str) else value(key),
+                       reverse=self.sort_descending)
+        missing.sort(key=lambda key: self.rows[key]["pid"])
+        for position, key in enumerate(available + missing):
+            self.table.move(key, "", position)
+        for column, title in self.column_titles.items():
+            arrow = (" ▼" if self.sort_descending else " ▲") if column == self.sort_column else ""
+            self.table.heading(column, text=title + arrow)
 
     def update_buttons(self):
         ready = self.online and self.authorized() and self.pending is None and not self.closed
@@ -134,7 +175,9 @@ class ProcessWindow:
                 f"대상 PC: {target[1]}\nPC ID: {target[0]}\n"
                 f"이름: {row.get('name') or '확인 불가'}\nPID: {row['pid']}\n"
                 f"사용자: {row.get('username') or '확인 불가'}\n생성 시각: {row['create_time']}\n\n"
-                "이 프로세스를 종료하시겠습니까? 저장하지 않은 내용은 사라질 수 있습니다.", parent=self.window):
+                "선택한 PID 하나를 종료합니다. 같은 프로그램의 다른 프로세스와 창은 남을 수 있습니다.\n"
+                "Chrome 같은 프로그램은 보조 프로세스를 다시 실행하거나 오류 창을 표시할 수 있습니다.\n"
+                "저장하지 않은 내용은 사라질 수 있습니다. 종료하시겠습니까?", parent=self.window):
             return
         # Tk's modal dialog still processes events: recheck target and identity.
         if (self.target != target or not self.online or not self.complete or self.pending is not None
@@ -165,6 +208,8 @@ class ProcessWindow:
             return
         if request["action"] == "LIST_PROCESSES":
             if result.get("ok") is True and result.get("code") == "PROCESS_LIST":
+                selected = self.table.selection()
+                previous = self.rows.get(selected[0]) if selected else None
                 self.rows = {str(row["pid"]): row for row in result["processes"]}
                 for item in self.table.get_children():
                     self.table.delete(item)
@@ -174,18 +219,39 @@ class ProcessWindow:
                         row.get("username") or "확인 불가", f"{memory / 1048576:.2f}" if memory is not None else "확인 불가",
                         "가능" if row["can_stop"] else "불가",
                         PROTECTION_REASONS.get(row.get("protected_reason"), row.get("protected_reason") or "—")))
+                self.apply_sort()
+                if previous is not None:
+                    current = self.rows.get(str(previous["pid"]))
+                    if current is not None and current.get("create_time") == previous.get("create_time"):
+                        self.table.selection_set(str(previous["pid"]))
                 self.complete = True
                 self.status.set(f"전체 목록 수신 완료 · {len(self.rows)}개" if self.rows else "프로세스 데이터 없음")
+                self.show_stop_observation()
             else:
                 self.complete = False
                 self.status.set("목록 수신 실패 · 불완전하거나 이전 목록으로는 종료할 수 없습니다")
                 self.outcome.set(RESULTS.get(result.get("code"), "조회 실패: " + str(result.get("code"))))
         else:
             code = result.get("code")
-            self.outcome.set(RESULTS.get(code, "종료 결과: " + str(code)))
+            self.last_stop = {"request": request, "code": code, "ok": result.get("ok") is True}
+            self.outcome.set(f"PID {request['pid']} · {code} · " + RESULTS.get(code, "알 수 없는 종료 결과"))
             # Every terminal stop result triggers a new inventory, even rejection.
             self.refresh()
         self.update_buttons()
+
+    def show_stop_observation(self):
+        if self.last_stop is None:
+            return
+        request, code = self.last_stop["request"], self.last_stop["code"]
+        current = self.rows.get(str(request["pid"]))
+        text = f"PID {request['pid']} · {code} · " + RESULTS.get(code, "알 수 없는 종료 결과")
+        if current is None or current.get("create_time") != request["create_time"]:
+            text += " · 재조회: 선택한 프로세스가 목록에 없습니다"
+        else:
+            text += " · 재조회: 같은 PID·생성 시각이 아직 목록에 있습니다"
+        if code in ("TERMINATED", "TERMINATION_REQUESTED"):
+            text += " · 프로그램의 다른 프로세스나 창은 남아 있을 수 있습니다"
+        self.outcome.set(text)
 
     def close(self):
         if self.closed:
