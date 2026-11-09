@@ -166,7 +166,7 @@ def run(args, context=None):
         started = time.monotonic()
         try:
             LOG.info("Connecting to %s:%s", args.host, args.port)
-            with connect(args.host, args.port, context, getattr(args, "server_name", None)) as conn:
+            with connect(args.host, args.port, context) as conn:
                 register(conn, args)
                 if not args.live:
                     return 0
@@ -205,7 +205,6 @@ def main():
     parser.add_argument("--id-file", type=Path, default=DEFAULT_ID_FILE)
     parser.add_argument("--pc-name", default=socket.gethostname())
     parser.add_argument("--host", default="127.0.0.1", help="Server hostname or IP")
-    parser.add_argument("--server-name", help="Certificate identity to verify when the connection IP changes")
     parser.add_argument("--port", type=int, default=5000)
     parser.add_argument("--ca-file", type=Path, help="Trusted server certificate/CA PEM")
     parser.add_argument("--token-file", type=Path, help="File containing this Agent's secret token")
