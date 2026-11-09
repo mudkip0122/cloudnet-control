@@ -2,7 +2,7 @@
 
 AWS EC2 기반 TCP/TLS 통신으로 Windows PC의 상태를 모니터링하고, 인증된 관리자 명령으로 테스트 PC를 종료·재부팅하는 3인 팀 프로젝트입니다.
 
-현재는 로컬 실시간 모니터링이 가능합니다. Agent의 실제 CPU·RAM·네트워크 값을 서버를 거쳐 GUI에 표시합니다. [실시간 실행 안내](docs/live-monitoring.md)를 따라 실행하세요. TLS·인증 및 EC2 연결은 이후 단계입니다.
+Agent의 실제 CPU·RAM·네트워크 값을 서버를 거쳐 GUI에 표시합니다. GUI에는 PC별 상세 정보, CPU·RAM 표시 카드와 네트워크 그래프가 있습니다. 로컬 실행은 [실시간 실행 안내](docs/live-monitoring.md), EC2 직접 연결과 TLS·PC별 인증은 [EC2 배포 안내](docs/ec2-direct.md)를 따르세요.
 
 ## 목표
 
@@ -66,6 +66,13 @@ Agent가 전송한 CPU·RAM 값이 서버를 거쳐 관리자 GUI에 표시되�
 
 ## 문서
 
+- [A 담당 서버 2주차 구현·검증·인계](docs/server-week2.md)
+
+- [더블클릭으로 EC2·서버·GUI 실행 및 종료](docs/launcher.md)
+
+- [EC2 직접 연결: TLS·PC별 인증·배포 순서](docs/ec2-direct.md)
+
+- [B 담당 Windows Agent 실행·문제 해결·인계](docs/agent-windows.md)
 - [1주차 실행 순서와 담당별 작업](docs/week1-start.md)
 - [로컬 통신 규격](docs/protocol.md)
 - [측정값 필드·단위·예시](docs/metrics-spec.md)

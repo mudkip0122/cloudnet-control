@@ -1,10 +1,60 @@
-"""Loopback-only live monitoring server."""
+"""Monitoring server with optional TLS and per-client authentication."""
 import argparse
 from datetime import datetime, timezone
 import math
+import hmac
+import logging
+import queue
 import socket
+import ssl
 import threading
+import time
 from common.protocol import recv_message, send_message
+from common.security import load_auth, loopback
+
+LOG = logging.getLogger("cloudnet.server")
+
+
+class Session:
+    """Serialize complete frames, including unsolicited status notifications."""
+    def __init__(self, conn):
+        self.conn = conn
+        self.send_lock = threading.Lock()
+        self.notifications = queue.Queue(maxsize=32)
+        self.stopped = threading.Event()
+        self.writer = None
+
+    def send(self, message):
+        with self.send_lock:
+            send_message(self.conn, message)
+
+    def close(self):
+        self.stopped.set()
+        try:
+            self.conn.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+    def start_notifications(self):
+        def write():
+            while not self.stopped.is_set():
+                try:
+                    message = self.notifications.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+                try:
+                    self.send(message)
+                except (OSError, ValueError):
+                    self.close()
+        self.writer = threading.Thread(target=write, daemon=True)
+        self.writer.start()
+
+    def notify(self, message):
+        try:
+            self.notifications.put_nowait(message)
+        except queue.Full:
+            # A stalled administrator must not delay Agent registration or expiry.
+            self.close()
 
 
 def utc_now():
@@ -12,10 +62,32 @@ def utc_now():
 
 
 class MonitoringServer:
-    def __init__(self):
+    def __init__(self, auth=None, heartbeat_timeout=15):
+        if not math.isfinite(heartbeat_timeout) or heartbeat_timeout <= 0:
+            raise ValueError("Heartbeat timeout must be positive and finite")
+        self.auth = auth
+        self.heartbeat_timeout = heartbeat_timeout
         self.lock = threading.Lock()
         self.devices = {}
         self.sessions = {}
+        self.admins = set()
+
+    def notify_status(self, pc_id):
+        with self.lock:
+            message = {"type": "STATUS_UPDATE", "device": dict(self.devices[pc_id]),
+                       "timestamp": utc_now()}
+            admins = tuple(self.admins)
+        for admin in admins:
+            admin.notify(message)
+
+    def watch_activity(self, session, activity, stopped):
+        # Whole valid frames must arrive before the deadline; partial bytes do not
+        # extend it, even if recv() never reaches its individual socket timeout.
+        while not stopped.wait(min(0.2, self.heartbeat_timeout / 4)):
+            if time.monotonic() - activity[0] >= self.heartbeat_timeout:
+                LOG.info("Session timed out")
+                session.close()
+                return
 
     def snapshot(self):
         with self.lock:
@@ -23,6 +95,10 @@ class MonitoringServer:
 
     def handle(self, conn):
         pc_id = None
+        session = Session(conn)
+        stopped = threading.Event()
+        activity = [time.monotonic()]
+        watcher = None
         try:
             conn.settimeout(5)
             message = recv_message(conn)
@@ -31,6 +107,17 @@ class MonitoringServer:
             role = message.get("role")
             if role not in ("agent", "admin"):
                 raise ValueError("Role must be agent or admin")
+            subscribe = message.get("subscribe_status", False)
+            if not isinstance(subscribe, bool) or (subscribe and role != "admin"):
+                raise ValueError("subscribe_status requires an admin and a boolean")
+            if self.auth is not None:
+                candidate_id = message.get("pc_id")
+                expected = (self.auth["admin_token"] if role == "admin" else
+                            self.auth["agents"].get(candidate_id) if isinstance(candidate_id, str) else None)
+                token = message.get("token")
+                if (not expected or not isinstance(token, str) or not token.isascii()
+                        or not hmac.compare_digest(token, expected)):
+                    raise ValueError("Authentication failed")
             if role == "agent":
                 for field in ("pc_id", "pc_name"):
                     value = message.get(field)
@@ -47,29 +134,60 @@ class MonitoringServer:
             response = {"type": "REGISTER_RESULT", "ok": True}
             if pc_id is not None:
                 response["pc_id"] = pc_id
-            send_message(conn, response)
-            conn.settimeout(15)
+            session.send(response)
+            if role == "admin" and subscribe:
+                session.start_notifications()
+                with self.lock:
+                    self.admins.add(session)
+            LOG.info("Registered role=%s pc_id=%s", role, pc_id)
+            activity[0] = time.monotonic()
+            watcher = threading.Thread(target=self.watch_activity,
+                                       args=(session, activity, stopped), daemon=True)
+            watcher.start()
+            if pc_id is not None:
+                self.notify_status(pc_id)
+            conn.settimeout(self.heartbeat_timeout)
             while True:
                 message = recv_message(conn)
                 if role == "admin" and message["type"] == "LIST_DEVICES":
-                    send_message(conn, self.snapshot())
+                    session.send(self.snapshot())
                 elif role == "agent" and message["type"] == "METRICS":
                     self.update_metrics(pc_id, message)
+                elif role == "agent" and message["type"] == "HEARTBEAT":
+                    if message.get("pc_id") != pc_id:
+                        raise ValueError("PC ID must match the registered session")
+                    with self.lock:
+                        self.devices[pc_id]["last_received"] = utc_now()
                 else:
                     raise ValueError("Message is not allowed for this role")
+                activity[0] = time.monotonic()
         except (ValueError, UnicodeError) as exc:
             try:
-                send_message(conn, {"type": "ERROR", "code": "INVALID_MESSAGE", "message": str(exc)})
+                LOG.warning("Rejected invalid message (%s)", type(exc).__name__)
+                session.send({"type": "ERROR", "code": "INVALID_MESSAGE", "message": str(exc)})
             except OSError:
                 pass
         except (OSError, EOFError):
             pass
         finally:
+            stopped.set()
+            session.close()
+            with self.lock:
+                self.admins.discard(session)
             if pc_id is not None:
+                disconnected = False
                 with self.lock:
                     if self.sessions.get(pc_id) is conn:
                         del self.sessions[pc_id]
                         self.devices[pc_id]["online"] = False
+                        disconnected = True
+                if disconnected:
+                    LOG.info("Disconnected pc_id=%s", pc_id)
+                    self.notify_status(pc_id)
+            if watcher is not None:
+                watcher.join(timeout=1)
+            if session.writer is not None:
+                session.writer.join(timeout=1)
 
     def update_metrics(self, pc_id, message):
         if message.get("pc_id") != pc_id:
@@ -102,15 +220,45 @@ def handle_client(conn):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=5000)
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--tls-cert")
+    parser.add_argument("--tls-key")
+    parser.add_argument("--auth-file")
+    parser.add_argument("--heartbeat-timeout", type=float, default=15)
     args = parser.parse_args()
-    state = MonitoringServer()
+    if not math.isfinite(args.heartbeat_timeout) or args.heartbeat_timeout <= 0:
+        parser.error("--heartbeat-timeout must be positive and finite")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    secure = all((args.tls_cert, args.tls_key, args.auth_file))
+    if any((args.tls_cert, args.tls_key, args.auth_file)) and not secure:
+        parser.error("Use --tls-cert, --tls-key and --auth-file together")
+    if not loopback(args.host) and not secure:
+        parser.error("External listeners require TLS and authentication")
+    context = None
+    try:
+        auth = load_auth(args.auth_file) if secure else None
+        if secure:
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.minimum_version = ssl.TLSVersion.TLSv1_2
+            context.load_cert_chain(args.tls_cert, args.tls_key)
+    except (ValueError, OSError, ssl.SSLError) as exc:
+        parser.error(str(exc))
+    state = MonitoringServer(auth, args.heartbeat_timeout)
     def serve(conn):
-        with conn:
-            state.handle(conn)
+        try:
+            with conn:
+                conn.settimeout(5)
+                if context:
+                    with context.wrap_socket(conn, server_side=True) as secured:
+                        state.handle(secured)
+                else:
+                    state.handle(conn)
+        except OSError:
+            pass
     with socket.socket() as listener:
-        listener.bind(("127.0.0.1", args.port))
+        listener.bind((args.host, args.port))
         listener.listen(16)
-        print(f"Local monitoring server: 127.0.0.1:{args.port}", flush=True)
+        print(f"Monitoring server: {args.host}:{args.port} (TLS/auth: {secure})", flush=True)
         try:
             while True:
                 conn, _ = listener.accept()
