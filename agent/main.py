@@ -12,6 +12,8 @@ import threading
 import time
 
 from agent.identity import DEFAULT_ID_FILE, resolve_id
+from agent.exam import ExamMonitor
+from agent.exam_commands import EXAM_ACTIONS, ExamCommands
 from agent.process_commands import ProcessCommands
 from common.protocol import recv_message, send_message
 from common.security import client_settings, connect
@@ -64,6 +66,12 @@ def register(conn, args):
     # Recompute for each session; a reconnect must not reuse an old server's setting.
     args.session_heartbeat_interval = heartbeat_interval(
         response.get("heartbeat_interval", getattr(args, "heartbeat_interval", 0)))
+    if (getattr(args, "exam_mode", False) or getattr(args, "allow_remote_exam_control", False)) and response.get("exam_events_v1") is not True:
+        LOG.error("Exam mode requires server exam_events_v1 support; exam monitoring has not started")
+        raise RegistrationError("Exam mode requires server exam_events_v1 support")
+    if getattr(args, "allow_remote_exam_control", False) and response.get("exam_control_v1") is not True:
+        LOG.error("Remote exam control requires server exam_control_v1 support")
+        raise RegistrationError("Remote exam control is unsupported by the server")
     LOG.info("Registered PC %s at %s:%s", args.pc_id, args.host, args.port)
 
 
@@ -72,6 +80,10 @@ def stream(conn, args):
     failed = threading.Event()
     errors = []
     send_lock = threading.Lock()
+    exam_commands = getattr(args, "exam_commands", None) or ExamCommands(args.pc_id)
+    initial_monitor = (ExamMonitor(args.pc_id, args.exam_id, args.forbid_process, args.exam_poll_interval)
+                       if getattr(args, "exam_mode", False) else None)
+    exam_commands.start_session(initial_monitor)
 
     def fail(exc):
         errors.append(exc)
@@ -107,6 +119,11 @@ def stream(conn, args):
                     continue
                 response = recv_message(conn)
                 if response.get("type") == "COMMAND":
+                    if response.get("action") in EXAM_ACTIONS:
+                        with exam_commands.lock:
+                            for result in exam_commands.handle(response):
+                                send(result)
+                        continue
                     commands = getattr(args, "process_commands", None)
                     if commands is None:
                         commands = ProcessCommands(args.pc_id)
@@ -124,14 +141,29 @@ def stream(conn, args):
         finally:
             failed.set()
 
+    def watch_exam():
+        try:
+            while not failed.is_set():
+                exam_commands.poll(send)
+                if failed.wait(.1):
+                    return
+        except (OSError, EOFError, ValueError) as exc:
+            fail(exc)
+
     interval = heartbeat_interval(getattr(args, "session_heartbeat_interval", 0))
     reader = threading.Thread(target=receive, name="agent-receiver", daemon=True)
     reader.start()
     pulse = None
+    exam_worker = None
     if interval:
         LOG.info("Heartbeat enabled: every %s seconds", interval)
         pulse = threading.Thread(target=heartbeat, name="agent-heartbeat", daemon=True)
         pulse.start()
+    if getattr(args, "exam_mode", False) or exam_commands.enabled:
+        LOG.info("Exam monitor ready; startup mode=%s remote control=%s",
+                 bool(initial_monitor), exam_commands.enabled)
+        exam_worker = threading.Thread(target=watch_exam, name="agent-exam", daemon=True)
+        exam_worker.start()
     count = 0
     try:
         for message in samples(args.pc_id):
@@ -155,9 +187,14 @@ def stream(conn, args):
         reader.join(timeout=6)
         if pulse is not None:
             pulse.join(timeout=6)
+        if exam_worker is not None:
+            exam_worker.join(timeout=6)
 
 
 def run(args, context=None):
+    args.exam_commands = ExamCommands(args.pc_id, enabled=bool(
+        getattr(args, "allow_remote_exam_control", False) and context is not None
+        and getattr(args, "token", None) and args.live))
     args.process_commands = ProcessCommands(args.pc_id, enabled=bool(
         getattr(args, "enable_process_control", False) and context is not None and getattr(args, "token", None)),
         protected_names=getattr(args, "protect_process", ()))
@@ -212,6 +249,14 @@ def main():
     parser.add_argument("--live", action="store_true", help="Stream real metrics and reconnect")
     parser.add_argument("--enable-process-control", action="store_true",
                         help="Accept process inventory/stop commands over authenticated TLS")
+    parser.add_argument("--exam-mode", action="store_true", help="Observe forbidden program names during an exam")
+    parser.add_argument("--allow-remote-exam-control", action="store_true",
+                        help="Allow authenticated GUI exam on/off and status commands; starts off unless --exam-mode")
+    parser.add_argument("--exam-id", help="Exam session identifier (1-64 ASCII letters/digits/_.-)")
+    parser.add_argument("--forbid-process", action="append", default=[], metavar="NAME.exe",
+                        help="Exact forbidden executable name; repeat for multiple names")
+    parser.add_argument("--exam-poll-interval", type=float, default=1,
+                        help="Exam scan interval in seconds (0.5-60; default 1)")
     parser.add_argument("--protect-process", action="append", default=[], metavar="NAME.exe",
                         help="Add a protected process name; repeat to protect several applications")
     parser.add_argument("--heartbeat-interval", type=float, default=0,
@@ -220,6 +265,10 @@ def main():
     args = parser.parse_args()
     try:
         heartbeat_interval(args.heartbeat_interval)
+        if args.exam_mode:
+            ExamMonitor("validation", args.exam_id, args.forbid_process, args.exam_poll_interval)
+        elif args.exam_id or args.forbid_process or args.exam_poll_interval != 1:
+            raise ValueError("Exam settings require --exam-mode")
     except ValueError as exc:
         parser.error(str(exc))
     if not 1 <= args.port <= 65535:
@@ -234,6 +283,9 @@ def main():
             LOG.error("Invalid TLS/token settings. Supply readable --ca-file and --token-file together for remote connections")
             return 2
         args.pc_id = resolve_id(args.pc_id, args.id_file)
+        if (args.exam_mode or args.allow_remote_exam_control) and (context is None or not args.token or not args.live):
+            LOG.error("Exam mode requires TLS/token settings and --live")
+            return 2
         if args.enable_process_control and (context is None or not args.live):
             LOG.error("Process control requires TLS/token settings and --live")
             return 2

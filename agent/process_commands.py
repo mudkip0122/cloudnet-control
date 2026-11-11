@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import logging
 import time
 
-from agent.processes import ProcessManager
+from agent.processes import ProcessManager, validate_batch_targets
 
 LOG = logging.getLogger("cloudnet.agent")
 
@@ -58,4 +58,19 @@ class ProcessCommands:
             LOG.info("Process stop result: pid=%s code=%s", request.get("pid")
                      if type(request.get("pid")) is int else "invalid", outcome["code"])
             return [result | outcome]
+        if action == "STOP_PROCESSES":
+            targets = request.get("targets")
+            try:
+                validate_batch_targets(targets)
+            except ValueError:
+                return reject("INVALID_TARGETS")
+            outcomes = self.manager.stop_many(targets, expiry)
+            counts = {}
+            for outcome in outcomes:
+                code = outcome["code"]
+                counts[code] = counts.get(code, 0) + 1
+                LOG.info("Batch process stop result: pid=%s code=%s", outcome["pid"], code)
+            return [result | {"ok": True, "code": "PROCESS_BATCH_RESULT",
+                              "all_terminated": all(row["code"] == "TERMINATED" for row in outcomes),
+                              "results": outcomes, "counts": counts}]
         return reject("UNSUPPORTED_ACTION")
