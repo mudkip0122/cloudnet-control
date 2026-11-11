@@ -15,6 +15,7 @@ from agent.identity import DEFAULT_ID_FILE, resolve_id
 from agent.exam import ExamMonitor
 from agent.exam_commands import EXAM_ACTIONS, ExamCommands
 from agent.process_commands import ProcessCommands
+from agent.rtt import RttTracker, validate_rtt_settings
 from common.protocol import recv_message, send_message
 from common.security import client_settings, connect
 
@@ -66,6 +67,8 @@ def register(conn, args):
     # Recompute for each session; a reconnect must not reuse an old server's setting.
     args.session_heartbeat_interval = heartbeat_interval(
         response.get("heartbeat_interval", getattr(args, "heartbeat_interval", 0)))
+    args.session_rtt_enabled = (response.get("rtt_v1") is True
+                                and getattr(args, "rtt_interval", 5) != 0)
     if (getattr(args, "exam_mode", False) or getattr(args, "allow_remote_exam_control", False)) and response.get("exam_events_v1") is not True:
         LOG.error("Exam mode requires server exam_events_v1 support; exam monitoring has not started")
         raise RegistrationError("Exam mode requires server exam_events_v1 support")
@@ -80,6 +83,8 @@ def stream(conn, args):
     failed = threading.Event()
     errors = []
     send_lock = threading.Lock()
+    rtt = (RttTracker(args.pc_id, getattr(args, "rtt_interval", 5), getattr(args, "rtt_timeout", 3))
+           if getattr(args, "session_rtt_enabled", False) else None)
     exam_commands = getattr(args, "exam_commands", None) or ExamCommands(args.pc_id)
     initial_monitor = (ExamMonitor(args.pc_id, args.exam_id, args.forbid_process, args.exam_poll_interval)
                        if getattr(args, "exam_mode", False) else None)
@@ -93,12 +98,26 @@ def stream(conn, args):
         except OSError:
             pass
 
-    def send(message):
+    def send(message, *, probe=False):
         # A complete header + payload is sent under one connection-local lock.
         with send_lock:
             if failed.is_set():
                 raise errors[0] if errors else ConnectionError("Session ended")
+            if probe:
+                message = rtt.begin()
             send_message(conn, message)
+
+    def measure_rtt():
+        try:
+            while not failed.is_set():
+                send(None, probe=True)
+                if failed.wait(rtt.timeout):
+                    return
+                rtt.snapshot()  # Clear unanswered probes, independently of metric collection.
+                if failed.wait(rtt.interval - rtt.timeout):
+                    return
+        except (OSError, EOFError, ValueError) as exc:
+            fail(exc)
 
     def heartbeat():
         while not failed.wait(interval):
@@ -118,6 +137,9 @@ def stream(conn, args):
                 if not pending and not select.select([conn], [], [], 0.2)[0]:
                     continue
                 response = recv_message(conn)
+                if rtt is not None and response.get("type") == "RTT_PONG":
+                    rtt.accept(response)
+                    continue
                 if response.get("type") == "COMMAND":
                     if response.get("action") in EXAM_ACTIONS:
                         with exam_commands.lock:
@@ -155,6 +177,7 @@ def stream(conn, args):
     reader.start()
     pulse = None
     exam_worker = None
+    rtt_worker = None
     if interval:
         LOG.info("Heartbeat enabled: every %s seconds", interval)
         pulse = threading.Thread(target=heartbeat, name="agent-heartbeat", daemon=True)
@@ -164,6 +187,10 @@ def stream(conn, args):
                  bool(initial_monitor), exam_commands.enabled)
         exam_worker = threading.Thread(target=watch_exam, name="agent-exam", daemon=True)
         exam_worker.start()
+    if rtt is not None:
+        LOG.info("RTT measurement enabled: interval=%s timeout=%s seconds", rtt.interval, rtt.timeout)
+        rtt_worker = threading.Thread(target=measure_rtt, name="agent-rtt", daemon=True)
+        rtt_worker.start()
     count = 0
     try:
         for message in samples(args.pc_id):
@@ -171,7 +198,7 @@ def stream(conn, args):
                 if errors:
                     raise errors[0]
                 raise ConnectionError("Server closed the session")
-            send(message)
+            send(message | rtt.snapshot() if rtt is not None else message)
             count += 1
             if count == 1:
                 LOG.info("Metric transmission started")
@@ -189,6 +216,8 @@ def stream(conn, args):
             pulse.join(timeout=6)
         if exam_worker is not None:
             exam_worker.join(timeout=6)
+        if rtt_worker is not None:
+            rtt_worker.join(timeout=6)
 
 
 def run(args, context=None):
@@ -261,10 +290,15 @@ def main():
                         help="Add a protected process name; repeat to protect several applications")
     parser.add_argument("--heartbeat-interval", type=float, default=0,
                         help="Heartbeat seconds (1-60); 0 for legacy servers. Server setting takes precedence")
+    parser.add_argument("--rtt-interval", type=float, default=5,
+                        help="RTT probe interval in seconds (1-60); 0 disables; requires server rtt_v1 support")
+    parser.add_argument("--rtt-timeout", type=float, default=3,
+                        help="RTT response timeout (0.1-60 seconds, no greater than interval)")
     parser.add_argument("--log-file", type=Path, default=DEFAULT_ID_FILE.parent / "logs" / "agent.log")
     args = parser.parse_args()
     try:
         heartbeat_interval(args.heartbeat_interval)
+        validate_rtt_settings(args.rtt_interval, args.rtt_timeout)
         if args.exam_mode:
             ExamMonitor("validation", args.exam_id, args.forbid_process, args.exam_poll_interval)
         elif args.exam_id or args.forbid_process or args.exam_poll_interval != 1:
