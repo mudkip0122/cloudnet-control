@@ -57,6 +57,18 @@ class ProcessPages:
         return combined
 
 
+def batch_targets(rows):
+    targets = {}
+    for row in rows:
+        pid, created = row.get("pid"), row.get("create_time")
+        if (row.get("can_stop") is True and type(pid) is int and pid > 0
+                and type(created) in (int, float) and math.isfinite(created) and created > 0):
+            targets[pid] = {"pid": pid, "create_time": created}
+    if not 1 <= len(targets) <= 100:
+        raise ValueError("종료 대상은 1~100개여야 합니다. 선택 범위를 줄이세요.")
+    return list(targets.values())
+
+
 def command_request(pc_id, action, row=None):
     request = {"type": "COMMAND", "command_id": str(uuid4()), "target_id": pc_id,
                "action": action,
@@ -65,6 +77,8 @@ def command_request(pc_id, action, row=None):
         if row is None or row.get("can_stop") is not True or row.get("create_time") is None:
             raise ValueError("종료할 수 없는 프로세스")
         request.update(pid=row["pid"], create_time=row["create_time"])
+    elif action == "STOP_PROCESSES":
+        request["targets"] = batch_targets(row or [])
     return request
 
 
