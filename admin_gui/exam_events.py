@@ -28,6 +28,30 @@ def valid_exam_id(value):
     return isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", value) is not None
 
 
+def process_identity(process):
+    if not isinstance(process, dict):
+        raise ValueError("프로세스 식별 오류")
+    pid, created, name = process.get("pid"), process.get("create_time"), process.get("name")
+    if (type(pid) is not int or pid <= 0 or type(created) not in (int, float)
+            or not 0 < created <= 1.7976931348623157e308
+            or not isinstance(name, str) or not name.strip() or len(name) > 128
+            or any(c in name for c in '/\\:*?"<>|') or any(ord(c) < 32 for c in name)):
+        raise ValueError("프로세스 식별 오류")
+
+
+def event_columns(event):
+    kind = event['kind']
+    if kind == 'EXAM_WINDOW_CHANGED':
+        before, after = event['previous_process'], event['process']
+        return ('Chrome 이탈' if event['transition'] == 'left' else 'Chrome 복귀',
+                f"{before['name']} → {after['name']}", f"{before['pid']} → {after['pid']}")
+    if kind == 'FOREGROUND_MONITOR_STATUS':
+        return ('활성 창 감시 공백' if event['status'] == 'unavailable' else '활성 창 조회 복구/시작', '—', '—')
+    if kind == 'FORBIDDEN_PROCESS_DETECTED':
+        return ('금지 프로그램 감지', event['process']['name'], event['process']['pid'])
+    return (MONITOR_LABELS[event['status']], f"조회 불가 {event['unreadable_count']}개", '—')
+
+
 def exam_event(message):
     if (not isinstance(message, dict) or message.get("type") != "EXAM_EVENT"
             or type(message.get("version")) is not int or message["version"] != 1
@@ -38,15 +62,18 @@ def exam_event(message):
             raise ValueError("시험 이벤트 식별 오류")
     timestamp(message.get("timestamp"))
     if message.get("kind") == "FORBIDDEN_PROCESS_DETECTED":
-        process = message.get("process")
-        if not isinstance(process, dict):
-            raise ValueError("감지 프로세스 오류")
-        pid, created, name = process.get("pid"), process.get("create_time"), process.get("name")
-        if (type(pid) is not int or pid <= 0 or type(created) not in (int, float)
-                or not 0 < created <= 1.7976931348623157e308
-                or not isinstance(name, str) or not name.strip() or len(name) > 128
-                or any(c in name for c in '/\\:*?"<>|') or any(ord(c) < 32 for c in name)):
-            raise ValueError("감지 프로세스 식별 오류")
+        process_identity(message.get('process'))
+    elif message.get('kind') == 'EXAM_WINDOW_CHANGED':
+        process_identity(message.get('process'))
+        process_identity(message.get('previous_process'))
+        before = message['previous_process']['name'].casefold() == 'chrome.exe'
+        after = message['process']['name'].casefold() == 'chrome.exe'
+        if ((message.get('transition'), before, after) not in
+                (('left', True, False), ('returned', False, True))):
+            raise ValueError('Chrome 전환 방향 오류')
+    elif message.get('kind') == 'FOREGROUND_MONITOR_STATUS':
+        if message.get('status') not in ('ok', 'unavailable'):
+            raise ValueError('활성 창 감시 상태 오류')
     elif message.get("kind") == "MONITOR_STATUS":
         interval, count = message.get("poll_interval"), message.get("unreadable_count")
         if (message.get("status") not in ("ok", "partial", "unavailable")
@@ -85,9 +112,22 @@ class ExamStore:
         self.monitor = {}
         self.revision = 0
         self.latest_warning = None
+        self.latest_foreground = None
+        self.foreground = {}
+        self.foreground_stream_connected = False
 
     def snapshot(self, devices):
+        previous = self.devices
         self.devices = {d["pc_id"]: deepcopy(d) for d in devices if isinstance(d, dict) and isinstance(d.get("pc_id"), str)}
+        for pc_id in tuple(self.foreground):
+            device, old = self.devices.get(pc_id, {}), previous.get(pc_id, {})
+            mode, old_mode = exam_mode(device.get('exam_mode')), exam_mode(old.get('exam_mode'))
+            if (not device.get('online') or not mode or not mode['enabled'] or not old_mode
+                    or device.get('agent_session_id') != old.get('agent_session_id')
+                    or any(mode.get(k) != old_mode.get(k) for k in ('enabled', 'exam_id', 'forbidden_processes', 'poll_interval'))
+                    or mode.get('monitor_status') == 'starting' and
+                    device.get('exam_state_received_at') != old.get('exam_state_received_at')):
+                self.foreground.pop(pc_id, None)
         for pc_id in tuple(self.monitor):
             device = self.devices.get(pc_id, {})
             mode = exam_mode(device.get("exam_mode"))
@@ -102,10 +142,11 @@ class ExamStore:
 
     def invalidate(self):
         self.monitor.clear()
+        self.foreground.clear()
         for device in self.devices.values():
             device['exam_mode'] = None
 
-    def accept(self, message):
+    def accept(self, message, apply_current=True):
         event = exam_event(message)
         key = event["event_id"]
         if key in self.seen:
@@ -115,14 +156,38 @@ class ExamStore:
             self.seen.popitem(last=False)
         self.history.append(event)
         self.revision += 1
-        if event["kind"] == "FORBIDDEN_PROCESS_DETECTED":
+        device = self.devices.get(event['pc_id'], {})
+        mode = exam_mode(device.get('exam_mode'))
+        active = apply_current and device.get('online') and mode and mode['enabled'] and mode['exam_id'] == event['exam_id']
+        if event['kind'] in ('EXAM_WINDOW_CHANGED', 'FOREGROUND_MONITOR_STATUS'):
+            if event['kind'] == 'EXAM_WINDOW_CHANGED':
+                self.latest_foreground = event
+            if active and self.foreground_stream_connected:
+                self.foreground[event['pc_id']] = event
+        elif event["kind"] == "FORBIDDEN_PROCESS_DETECTED":
             self.latest_warning = event
         else:
-            device = self.devices.get(event['pc_id'], {})
-            mode = exam_mode(device.get('exam_mode'))
-            if device.get('online') and mode and mode['enabled'] and mode['exam_id'] == event['exam_id']:
+            if active:
                 self.monitor[event['pc_id']] = event
         return True
+
+    def foreground_state(self, pc_id, connected):
+        device = self.devices.get(pc_id, {})
+        mode = exam_mode(device.get('exam_mode'))
+        if not connected or not device.get('online'):
+            return '연결 끊김 · 감시 공백'
+        if not mode:
+            return '시험 상태 미확인 · 활성 창 감시 공백'
+        if not mode['enabled']:
+            return '시험 모드 꺼짐 · 활성 창 감시 중지'
+        if not self.foreground_stream_connected:
+            return '이벤트 연결 미확인 · 활성 창 감시 공백'
+        event = self.foreground.get(pc_id)
+        if not event:
+            return '활성 창 감시 미확인 · 지원/초기 상태 대기'
+        if event.get('status') == 'unavailable':
+            return '감시 공백 · 활성 창 확인 불가'
+        return '활성 창 조회 가능 (최근 수신 상태)'
 
     def state(self, pc_id, connected):
         device = self.devices.get(pc_id, {})
@@ -169,7 +234,8 @@ class ExamEventClient:
                     self.sock = conn
                     if self.stop.is_set():
                         return
-                    send_message(conn, dict(type='REGISTER', role='admin', token=self.token, subscribe_exam=True))
+                    send_message(conn, dict(type='REGISTER', role='admin', token=self.token,
+                                            subscribe_exam=True, subscribe_status=True))
                     response = recv_message(conn)
                     if response.get('type') != 'REGISTER_RESULT' or response.get('ok') is not True:
                         self.publish_connection(False, '시험 이벤트 인증/구독 거절 · 서버 지원 확인')

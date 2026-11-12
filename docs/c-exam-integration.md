@@ -2,6 +2,8 @@
 
 기준: B `3a091ef`, 통합 브랜치 `integration/c-exam-batch-control`.
 
+최신 반영: A c5ecfef의 기존 이벤트 구독/시험 상태/RTT 지원과 B b6f76c0를 받았습니다. 아래 ef3f64e 기준 구독 미구현 설명은 당시 기록이며 현재 기존 구독 구현은 완료되어 있습니다. 새 Chrome 전경 이벤트의 C 구현과 A 후속 작업은 [C 전경 감시 인계](c-foreground-handoff.md)를 따릅니다.
+
 교수님 피드백을 반영해 기존 C 구현을 `c/week3-dashboard`에도 병합했습니다. 이후 A `ef3f64e`와 B `57b530b`를 받았고, [A→C 합의 및 C 구현](c-exam-agreement.md)을 추가했습니다. 경고/감지 이력 C 구현은 완료했으며 A의 실제 중계와 공동 검증·main 병합은 대기입니다.
 
 ## 구현

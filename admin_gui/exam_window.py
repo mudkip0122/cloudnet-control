@@ -6,7 +6,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 from admin_gui.process_control import ProcessClient, command_request
-from admin_gui.exam_events import MONITOR_LABELS, exam_mode
+from admin_gui.exam_events import MONITOR_LABELS, exam_mode, event_columns
 
 
 def exam_request(pc_id, action, exam_id="", names="", interval="1"):
@@ -42,13 +42,17 @@ class ExamWindow:
         self.history_revision = -1
         self.display_pc_id = None
         self.last_mode_known = False
+        self.agent_session_id = None
         self.target_text = tk.StringVar()
         self.status = tk.StringVar(value="상태 미확인")
         ttk.Label(self.window, textvariable=self.target_text).pack(padx=12, pady=8)
         self.monitor_text = tk.StringVar(value="시험 상태 미확인")
         ttk.Label(self.window, textvariable=self.monitor_text).pack(padx=12, pady=4)
+        self.foreground_text = tk.StringVar(value='활성 창 감시 미확인')
+        ttk.Label(self.window, textvariable=self.foreground_text).pack(padx=12, pady=4)
         ttk.Label(self.window, textvariable=dashboard.exam_stream, wraplength=1000).pack(padx=12)
         ttk.Label(self.window, textvariable=dashboard.exam_warning, foreground="#b91c1c", wraplength=1000).pack(padx=12, pady=4)
+        ttk.Label(self.window, textvariable=dashboard.foreground_warning, wraplength=1000).pack(padx=12, pady=4)
         self.inputs = []
         for title, default in (("시험 ID", ""), ("금지 실행 파일 (쉼표 구분)", ""), ("검사 간격 (초)", "1")):
             ttk.Label(self.window, text=title).pack(anchor="w", padx=12)
@@ -56,19 +60,21 @@ class ExamWindow:
             ttk.Entry(self.window, textvariable=value, width=65).pack(padx=12, pady=4)
             self.inputs.append(value)
         self.buttons = []
+        actions = ttk.Frame(self.window)
+        actions.pack(padx=12, pady=8)
         for action, title in (("on", "켜기"), ("off", "끄기"), ("status", "상태 새로고침")):
-            button = ttk.Button(self.window, text=title, command=lambda a=action: self.submit(a))
-            button.pack(pady=4)
+            button = ttk.Button(actions, text=title, command=lambda a=action: self.submit(a))
+            button.pack(side='left', padx=4)
             self.buttons.append(button)
         ttk.Label(self.window, textvariable=self.status, wraplength=520).pack(padx=12, pady=10)
-        ttk.Label(self.window, text="이름 기반 감지 · 브라우저 탭/URL 감시 및 실행 차단 기능 없음").pack(padx=12, pady=8)
+        ttk.Label(self.window, text="프로그램 이름·활성 창 전환 감지 · 브라우저 탭/URL 감시·자동 차단 없음 · 공백 전후 이탈 시간 계산 안 함").pack(padx=12, pady=8)
         ttk.Label(self.window, text="전체 PC 감지·감시 상태 이력 · 최근 500개 · 과거 감지는 현재 실행 여부나 부정행위 확정이 아님").pack(padx=12)
         container = ttk.Frame(self.window)
         container.pack(fill="both", expand=True, padx=12, pady=8)
         columns = ('pc', 'exam', 'kind', 'name', 'pid', 'time')
         self.history_table = ttk.Treeview(container, columns=columns, show='headings', height=7)
         for column, title, width in zip(columns,
-                ('PC ID', '시험 ID', '종류 / 감시 상태', '프로그램 / 조회 불가 수', 'PID', '이벤트 시각'),
+                ('PC ID', '시험 ID', '종류 / 감시 상태', '프로그램 / 전환 / 조회 불가 수', 'PID', '이벤트 시각'),
                 (85, 130, 160, 190, 70, 260)):
             self.history_table.heading(column, text=title)
             self.history_table.column(column, width=width)
@@ -82,6 +88,7 @@ class ExamWindow:
     def set_target(self, device, connected):
         self.display_pc_id = device.get('pc_id') if device else None
         target = device["pc_id"] if connected and device and device.get("online") else None
+        session_id = device.get('agent_session_id') if device else None
         known = exam_mode(self.dashboard.exam_store.devices.get(self.display_pc_id, {}).get('exam_mode')) is not None
         if target != self.target:
             self.target = target
@@ -90,6 +97,10 @@ class ExamWindow:
             self.needs_status = bool(target)
         elif target and self.last_mode_known and not known:
             self.needs_status = True
+        if target and self.agent_session_id is not None and session_id != self.agent_session_id:
+            self.generation += 1
+            self.needs_status = True
+        self.agent_session_id = session_id
         self.last_mode_known = known
         if self.needs_status and target and self.pending is None:
             self.needs_status = False
@@ -102,18 +113,16 @@ class ExamWindow:
     def refresh_history(self):
         store = self.dashboard.exam_store
         self.monitor_text.set("현재 시험 상태: " + store.state(self.display_pc_id, self.dashboard.connected))
+        self.foreground_text.set('Chrome 활성 창 감시: ' + store.foreground_state(self.display_pc_id, self.dashboard.connected))
         if self.history_revision == store.revision:
             return
         self.history_revision = store.revision
         for item in self.history_table.get_children():
             self.history_table.delete(item)
         for event in store.history:
-            process = event.get('process', {})
-            detected = event['kind'] == 'FORBIDDEN_PROCESS_DETECTED'
-            kind = '금지 프로그램 감지' if detected else MONITOR_LABELS.get(event.get('status'), '상태 미확인')
+            kind, name, pid = event_columns(event)
             self.history_table.insert('', 'end', values=(event['pc_id'], event['exam_id'], kind,
-                process.get('name') if detected else f"조회 불가 {event.get('unreadable_count')}개",
-                process.get('pid', '—'), event['timestamp']))
+                name, pid, event['timestamp']))
 
     def submit(self, action):
         if not self.target or self.pending is not None:

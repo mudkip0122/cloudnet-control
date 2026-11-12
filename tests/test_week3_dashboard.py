@@ -8,6 +8,7 @@ import customtkinter as ctk
 
 from admin_gui.main import Dashboard
 from tests.test_gui_exam_events import detection, mode
+from tests.test_gui_foreground import transition, foreground_status
 
 
 class WeekThreeTests(unittest.TestCase):
@@ -109,3 +110,29 @@ class WeekThreeTests(unittest.TestCase):
         self.assertIn('연결 끊김', window.monitor_text.get())
         self.assertEqual(len(window.history_table.get_children()), 1)
         self.assertFalse(d.exam_button.instate(['disabled']))
+
+    def test_chrome_transition_history_and_foreground_gap_in_widgets(self):
+        d = self.dashboard
+        d.context, d.token = object(), 'synthetic'
+        d.exam_client = SimpleNamespace(events=queue.Queue(), connection=queue.Queue(), close=lambda: None,
+                                       worker=SimpleNamespace(is_alive=lambda: False))
+        self.devices[0]['exam_mode'] = mode()
+        d.exam_store.snapshot(self.devices)
+        d.exam_client.connection.put((1, True, 'test subscription'))
+        for event in (foreground_status(), transition(), transition(), foreground_status('gap', 'unavailable')):
+            d.exam_client.events.put((1, event))
+        d.drain_exam_events()
+        self.assertIn('Chrome 이탈', d.foreground_warning.get())
+        self.assertIn('notepad.exe', d.foreground_warning.get())
+        self.assertNotIn('Chrome 이탈', d.exam_warning.get())
+        with patch('admin_gui.exam_window.ProcessClient') as client:
+            client.return_value.worker.is_alive.return_value = False
+            d.open_exam()
+        window = d.exam_window
+        self.assertEqual(len(window.history_table.get_children()), 3)
+        self.assertIn('감시 공백', window.foreground_text.get())
+        d.exam_client.events.put((1, transition('return', 'returned')))
+        d.drain_exam_events()
+        window.refresh_history()
+        self.assertIn('Chrome 복귀', d.foreground_warning.get())
+        self.assertEqual(len(window.history_table.get_children()), 4)

@@ -2,6 +2,8 @@
 
 기준: A `ef3f64e`, B `57b530b`. 사용자가 전달한 A 제안에 C가 동의했고 아래 규격으로 C를 구현했습니다. A의 실제 구독 중계와 지원 플래그 구현 완료를 뜻하지 않습니다.
 
+후속: A c5ecfef에 기존 구독·상태 중계가 구현됐고 C는 별도 연결의 subscribe_exam:true와 subscribe_status:true를 함께 사용합니다. 최신 A 필드는 [A 확정 규격](a-c-exam-contract.md)을, 이후 B가 추가한 Chrome 전경 감시는 [C 전경 감시 인계](c-foreground-handoff.md)를 따릅니다. 아래 ef3f64e 미구현 표기는 당시 기준입니다.
+
 ## 합의 내용
 
 1. 기존 GUI의 LIST_DEVICES 1초 폴링을 유지합니다. 별도 TLS 관리자 연결에서 기존 관리자 토큰으로 REGISTER에 `subscribe_exam:true`를 넣고 원문 `EXAM_EVENT`를 수신합니다. 기존 폴링 연결에 시험 이벤트를 섞지 않습니다. 새로운 이벤트 ACK는 추가하지 않습니다.
