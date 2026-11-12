@@ -2,13 +2,16 @@
 from argparse import Namespace
 from datetime import datetime, timedelta, timezone
 import socket
+import queue
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
 from agent.exam import ExamMonitor
 from agent.exam_commands import ExamCommands
 from agent.main import stream
+from admin_gui.exam_events import ExamEventClient, ExamStore, event_columns
 from common.protocol import recv_message, send_message
 from server.contracts import exam_event
 from tests import test_server_exam_stream as tls
@@ -116,6 +119,75 @@ class ForegroundTlsTests(unittest.TestCase):
         # No foreground event is leaked to the subscriber, which remains usable.
         send_message(subscriber, dict(type="LIST_DEVICES"))
         self.assertEqual(recv_message(subscriber)["type"], "DEVICE_LIST")
+
+    def test_c_b257588_receives_foreground_history_gaps_and_state_reset(self):
+        agent, response = self.connect("agent")
+        self.assertIs(response["exam_foreground_v1"], True)
+        commander, _ = self.connect()
+        subscription = self.open_tls()
+        store = ExamStore()
+
+        def wait_until(condition):
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                try:
+                    _, connected, _ = client.connection.get_nowait()
+                    store.foreground_stream_connected = connected
+                except queue.Empty:
+                    pass
+                try:
+                    _, message = client.events.get(timeout=.1)
+                except queue.Empty:
+                    continue
+                if message["type"] == "DEVICE_LIST":
+                    store.snapshot(message["devices"])
+                elif message["type"] == "STATUS_UPDATE":
+                    store.status_update(message["device"])
+                else:
+                    store.accept(message)
+                if condition():
+                    return
+            self.fail("C did not receive the expected foreground event/state from A TLS")
+
+        with patch("admin_gui.exam_events.connect", return_value=subscription):
+            client = ExamEventClient("localhost", 0, self.client_context, self.auth["admin_token"])
+            try:
+                wait_until(lambda: "PC-01" in store.devices)
+                self.enable(agent, commander)
+                wait_until(lambda: (store.devices["PC-01"].get("exam_mode") or {}).get("enabled") is True)
+                samples = [event("FOREGROUND_MONITOR_STATUS", status="ok", event_id="c-fg-ok"),
+                           event(event_id="c-left"),
+                           event(transition="returned", previous_process=process("notepad.exe", 200),
+                                 process=process(), event_id="c-returned"),
+                           event("FOREGROUND_MONITOR_STATUS", event_id="c-gap"),
+                           event("FOREGROUND_MONITOR_STATUS", status="ok", event_id="c-recovery")]
+                for sample in samples:
+                    send_message(agent, sample)
+                    wait_until(lambda: sample["event_id"] in store.seen)
+                    if sample.get("status") == "unavailable":
+                        self.assertIn("감시 공백", store.foreground_state("PC-01", True))
+                self.assertIn("조회 가능", store.foreground_state("PC-01", True))
+                self.assertEqual(event_columns(store.history[1])[0], "Chrome 이탈")
+                self.assertEqual(event_columns(store.history[2])[0], "Chrome 복귀")
+                self.assertIsNone(store.latest_warning)
+                send_message(agent, samples[1])
+                self.barrier(agent)
+                request = dict(type="COMMAND", action="SET_EXAM_MODE", command_id="c-fg-off", target_id="PC-01",
+                    expires_at=(datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat(),
+                    enabled=False, exam_id="exam-1")
+                send_message(commander, request)
+                recv_message(agent)
+                send_message(agent, self.handler.handle(request)[0])
+                self.assertEqual(recv_message(commander)["code"], "EXAM_MODE_DISABLED")
+                wait_until(lambda: (store.devices["PC-01"].get("exam_mode") or {}).get("enabled") is False)
+                self.assertIn("감시 중지", store.foreground_state("PC-01", True))
+                self.assertEqual(len(store.history), 5)
+                self.assertNotIn("PC-01", store.foreground)
+                self.assertEqual(self.audit.db.execute("SELECT count(*) FROM exam_events").fetchone()[0], 5)
+            finally:
+                client.close()
+                client.worker.join(timeout=3)
+            self.assertFalse(client.worker.is_alive())
 
     def test_actual_b_stream_reports_left_returned_and_monitor_gap(self):
         agent, registered = self.connect("agent")
