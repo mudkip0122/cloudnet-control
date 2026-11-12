@@ -36,14 +36,13 @@ def main():
             dashboard.show_detail()
             assert dashboard.usage_values["cpu"].get() == f'{device["metrics"]["cpu_percent"]:.1f} %'
             assert dashboard.charts.points[-1][1]["cpu_percent"] == device["metrics"]["cpu_percent"]
-        dashboard.charts.canvas.configure(width=1000, height=210)
+        dashboard.charts.canvas.configure(width=1000, height=360)
         root.update_idletasks()
-        # Render against a fixed size even when the test window is withdrawn.
-        with patch.object(dashboard.charts.canvas, "winfo_width", return_value=1000), \
-                patch.object(dashboard.charts.canvas, "winfo_height", return_value=210):
-            dashboard.charts.draw()
-        assert any(dashboard.charts.canvas.type(item) == "oval"
-                   for item in dashboard.charts.canvas.find_all())
+        dashboard.charts.draw()
+        assert list(dashboard.charts.lines["cpu_percent"].get_ydata()) == [30]
+        assert list(dashboard.charts.lines["ram_percent"].get_ydata()) == [50]
+        assert list(dashboard.charts.lines["download_mbps"].get_ydata()) == [0]
+        assert len(dashboard.charts.axes) == 2
         refresh(True, list(reversed(devices)))
         assert dashboard.table.selection() == ("sample-3",)
         devices[2]["online"] = False

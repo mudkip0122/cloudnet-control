@@ -76,7 +76,7 @@ class ExamCommands:
             return reject("INVALID_EXAM_SETTINGS")
         if request["enabled"]:
             names = request.get("forbidden_processes")
-            if not isinstance(names, list) or not 1 <= len(names) <= 100:
+            if "forbidden_processes" in request and (not isinstance(names, list) or not 1 <= len(names) <= 100):
                 return reject("INVALID_EXAM_SETTINGS")
             try:
                 monitor = ExamMonitor(self.pc_id, request.get("exam_id"), names,
