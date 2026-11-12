@@ -102,6 +102,34 @@ class GroupWindowTests(unittest.TestCase):
         self.assertIn('TERMINATION_REQUESTED', window.batch_results.get('1.0', 'end'))
         self.assertEqual(self.submitted[-1]['action'], 'LIST_PROCESSES')
 
+    def test_group_shows_users_permissions_and_protection(self):
+        window = self.window
+        window.rows['2'].update(username='other', protected_reason='OTHER_USER')
+        window.render_rows()
+        values = window.table.item('group:app.exe', 'values')
+        self.assertEqual(values[2], '혼합: other, u')
+        self.assertEqual(values[4], '혼합 (가능 1 / 불가 1)')
+        self.assertEqual(values[5], '다른 사용자 또는 소유자 확인 불가')
+        self.assertEqual(window.table.item('1', 'values')[2], 'u')
+        window.search.set('other')
+        values = window.table.item('group:app.exe', 'values')
+        self.assertEqual(values[2], 'other')
+        self.assertEqual(values[4], '불가')
+
+    def test_group_all_allowed_and_unknown_protection(self):
+        window = self.window
+        window.rows['2']['can_stop'] = True
+        window.render_rows()
+        values = window.table.item('group:app.exe', 'values')
+        self.assertEqual(values[2], 'u')
+        self.assertEqual(values[4:6], ('가능', '—'))
+        for row in window.rows.values():
+            row.update(username=None, can_stop=False)
+        window.render_rows()
+        values = window.table.item('group:app.exe', 'values')
+        self.assertEqual(values[2], '확인 불가')
+        self.assertEqual(values[4:6], ('불가', '확인 불가'))
+
     def test_target_change_in_confirmation_cancels_batch(self):
         self.window.table.selection_set('group:app.exe')
         def change(*args, **kwargs):

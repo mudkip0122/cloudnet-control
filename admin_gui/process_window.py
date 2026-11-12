@@ -219,9 +219,20 @@ class ProcessWindow:
                 "가능" if row["can_stop"] else "불가",
                 PROTECTION_REASONS.get(row.get("protected_reason"), row.get("protected_reason") or "—"), row.get("create_time") or "확인 불가"))
         for group, keys in self.groups.items():
-            memory = [self.rows[key].get("memory_bytes") for key in keys]
+            rows = [self.rows[key] for key in keys]
+            memory = [row.get("memory_bytes") for row in rows]
             total = "확인 불가" if any(value is None for value in memory) else f"{sum(memory) / 1048576:.2f}"
-            self.table.item(group, text=f"{self.rows[keys[0]]['name']} ({len(keys)}개)", values=("", "", "", total))
+            users = sorted({row.get("username") or "확인 불가" for row in rows})
+            username = users[0] if len(users) == 1 else "혼합: " + ", ".join(users)
+            allowed = sum(row.get("can_stop") is True for row in rows)
+            can_stop = ("가능" if allowed == len(rows) else "불가" if not allowed
+                        else f"혼합 (가능 {allowed} / 불가 {len(rows) - allowed})")
+            reasons = sorted({PROTECTION_REASONS.get(row.get("protected_reason"),
+                              row.get("protected_reason") or "확인 불가")
+                              for row in rows if row.get("can_stop") is not True or row.get("protected_reason")})
+            reason = " / ".join(reasons) if reasons else "—"
+            self.table.item(group, text=f"{rows[0]['name']} ({len(keys)}개)",
+                            values=("", "", username, total, can_stop, reason, ""))
         self.apply_sort()
         for key, previous in selected.items():
             if self.table.exists(key) and self.rows[key].get("create_time") == previous.get("create_time"):
