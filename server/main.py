@@ -199,7 +199,7 @@ class MonitoringServer:
                 response["pc_id"] = pc_id
                 response.update(heartbeat_interval=min(5, self.heartbeat_timeout / 3), rtt_v1=True)
             if exam_supported:
-                response.update(exam_events_v1=True, exam_control_v1=True)
+                response.update(exam_events_v1=True, exam_control_v1=True, exam_foreground_v1=True)
             session.send(response)
             if role == "admin":
                 session.start_notifications()
