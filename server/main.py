@@ -77,19 +77,31 @@ class MonitoringServer:
         self.devices = {}
         self.sessions = {}
         self.admins = set()
+        self.exam_admins = set()
         self.connections = {}
         self.pending_commands = {}
         self.seen_commands = {}
         self.metrics_received_at = {}
         self.exam_states = {}
         self.event_rates = {}
+        self.rtt_received_at = {}
 
     def device_snapshot(self, pc_id):
         """Called under lock; freshness uses server time, never Agent clock."""
         device = dict(self.devices[pc_id])
+        device["server_timestamp"] = utc_now()
         received = self.metrics_received_at.get(pc_id)
+        now = time.monotonic()
+        device["metrics_age_seconds"] = None if received is None else round(max(0, now - received), 3)
         device["metrics_stale"] = (not device["online"] or received is None
-                                   or time.monotonic() - received > 6)
+                                   or now - received > 6)
+        mode = self.exam_states.get(pc_id)
+        device["exam_mode"] = None if mode is None else dict(mode)
+        rtt = self.rtt_received_at.get(pc_id)
+        device["last_rtt_received"] = None if rtt is None else rtt[2]
+        device["rtt_age_seconds"] = None if rtt is None else round(max(0, now - rtt[1]), 3)
+        device["rtt_stale"] = (device["metrics_stale"] or rtt is None or now - rtt[1] > 8
+                               or (device.get("metrics") or {}).get("rtt_status") != "ok")
         return device
 
     def notify_admin(self, conn, message):
@@ -109,8 +121,9 @@ class MonitoringServer:
 
     def notify_status(self, pc_id):
         with self.lock:
+            timestamp = utc_now()
             message = {"type": "STATUS_UPDATE", "device": self.device_snapshot(pc_id),
-                       "timestamp": utc_now()}
+                       "timestamp": timestamp, "server_timestamp": timestamp}
             admins = tuple(self.admins)
         for admin in admins:
             admin.notify(message)
@@ -147,6 +160,12 @@ class MonitoringServer:
             subscribe = message.get("subscribe_status", False)
             if not isinstance(subscribe, bool) or (subscribe and role != "admin"):
                 raise ValueError("subscribe_status requires an admin and a boolean")
+            subscribe_exam = message.get("subscribe_exam", False)
+            if not isinstance(subscribe_exam, bool) or (subscribe_exam and role != "admin"):
+                raise ValueError("subscribe_exam requires an admin and a boolean")
+            exam_supported = self.audit is not None and self.auth is not None and isinstance(conn, ssl.SSLSocket)
+            if subscribe_exam and not exam_supported:
+                raise ValueError("Exam subscription requires TLS, authentication and audit storage")
             if self.auth is not None:
                 candidate_id = message.get("pc_id")
                 expected = (self.auth["admin_token"] if role == "admin" else
@@ -169,20 +188,27 @@ class MonitoringServer:
                     self.metrics_received_at.pop(pc_id, None)
                     self.exam_states.pop(pc_id, None)
                     self.event_rates.pop(pc_id, None)
+                    self.rtt_received_at.pop(pc_id, None)
                     self.devices[pc_id] = {"pc_id": pc_id, "pc_name": message["pc_name"],
                                            "online": True, "last_received": utc_now(),
-                                           "last_metrics_received": None, "metrics": None}
+                                           "last_metrics_received": None, "metrics": None,
+                                           "agent_session_id": session.executor_id,
+                                           "exam_state_received_at": None}
             response = {"type": "REGISTER_RESULT", "ok": True}
             if pc_id is not None:
                 response["pc_id"] = pc_id
                 response.update(heartbeat_interval=min(5, self.heartbeat_timeout / 3), rtt_v1=True)
-                # Exam support flags await agreement on the A -> C event transport.
+            if exam_supported:
+                response.update(exam_events_v1=True, exam_control_v1=True)
             session.send(response)
             if role == "admin":
                 session.start_notifications()
             if role == "admin" and subscribe:
                 with self.lock:
                     self.admins.add(session)
+            if role == "admin" and subscribe_exam:
+                with self.lock:
+                    self.exam_admins.add(session)
             LOG.info("Registered role=%s pc_id=%s", role, pc_id)
             activity[0] = time.monotonic()
             watcher = threading.Thread(target=self.watch_activity,
@@ -230,10 +256,10 @@ class MonitoringServer:
             session.close()
             with self.lock:
                 self.admins.discard(session)
+                self.exam_admins.discard(session)
                 self.connections.pop(conn, None)
-                abandoned = [key for key, value in self.pending_commands.items() if value["admin"] is conn]
-                for key in abandoned:
-                    del self.pending_commands[key]
+                # Retain accepted requests until result/expiry even if their GUI
+                # closes: audit and other supervisors still need the outcome.
             if pc_id is not None:
                 disconnected = False
                 with self.lock:
@@ -241,6 +267,7 @@ class MonitoringServer:
                         del self.sessions[pc_id]
                         self.devices[pc_id]["online"] = False
                         self.exam_states.pop(pc_id, None)
+                        self.devices[pc_id]["exam_state_received_at"] = None
                         disconnected = True
                 if disconnected:
                     LOG.info("Disconnected pc_id=%s", pc_id)
@@ -309,6 +336,7 @@ class MonitoringServer:
         command_id = message.get("command_id")
         if not isinstance(command_id, str) or message.get("pc_id") != pc_id:
             raise ValueError("Command result identity mismatch")
+        mode_changed = False
         with self.lock:
             pending = self.pending_commands.get(command_id)
             # Late responses belong to an expired or disconnected request.
@@ -337,6 +365,9 @@ class MonitoringServer:
             if (pending["action"] in ("SET_EXAM_MODE", "GET_EXAM_STATUS")
                     and message.get("ok") is True and isinstance(message.get("exam_mode"), dict)):
                 self.exam_states[pc_id] = dict(message["exam_mode"])
+                if pc_id in self.devices:
+                    self.devices[pc_id]["exam_state_received_at"] = utc_now()
+                    mode_changed = True
             if finished:
                 del self.pending_commands[command_id]
         try:
@@ -345,6 +376,8 @@ class MonitoringServer:
             # A closed admin must not disconnect the Agent.
             with self.lock:
                 self.pending_commands.pop(command_id, None)
+        if mode_changed:
+            self.notify_status(pc_id)
 
     def receive_exam_event(self, pc_id, message):
         clean = exam_event(message, pc_id)
@@ -358,7 +391,23 @@ class MonitoringServer:
             if count >= 200:
                 raise ValueError("Exam event rate limit exceeded")
             self.event_rates[pc_id] = (started, count + 1)
-        return self.audit.event(clean, utc_now())
+        received = utc_now()
+        if not self.audit.event(clean, received):
+            return False
+        mode_changed = False
+        with self.lock:
+            mode = self.exam_states.get(pc_id)
+            if (clean["kind"] == "MONITOR_STATUS" and mode is not None
+                    and mode.get("enabled") and mode.get("exam_id") == clean["exam_id"]):
+                self.exam_states[pc_id] = dict(mode, monitor_status=clean["status"])
+                self.devices[pc_id]["exam_state_received_at"] = received
+                mode_changed = True
+            admins = tuple(self.exam_admins)
+        for admin in admins:
+            admin.notify(clean)
+        if mode_changed:
+            self.notify_status(pc_id)
+        return True
 
     def update_metrics(self, pc_id, message):
         if message.get("pc_id") != pc_id:
@@ -389,6 +438,12 @@ class MonitoringServer:
             self.devices[pc_id].update(metrics=clean, last_received=received,
                                        last_metrics_received=received)
             self.metrics_received_at[pc_id] = time.monotonic()
+            rtt_timestamp = clean.get("rtt_timestamp")
+            previous_rtt = self.rtt_received_at.get(pc_id)
+            if rtt_timestamp is None:
+                self.rtt_received_at.pop(pc_id, None)
+            elif previous_rtt is None or previous_rtt[0] != rtt_timestamp:
+                self.rtt_received_at[pc_id] = (rtt_timestamp, time.monotonic(), received)
 
 
 def handle_client(conn):
