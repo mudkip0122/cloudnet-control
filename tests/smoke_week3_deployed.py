@@ -101,6 +101,7 @@ def main():
             pc_id: dashboard.devices[pc_id].get("online") and
             dashboard.devices[pc_id].get("last_metrics_received") != stamp
             for pc_id, stamp in peer_times.items() if pc_id != "PC-01"}
+        assert all(report["other_pc_updates_during_load"].values())
 
         client = ProcessClient(HOST, 5000, context, token, server_name=SERVER_NAME)
         request = command_request("PC-01", "LIST_PROCESSES")
@@ -128,6 +129,7 @@ def main():
             wait_for(received_result)
             returned_request, result = result_holder[0]
             assert returned_request["command_id"] == peer_request["command_id"]
+            assert result.get("ok") is True and result.get("code") == "PROCESS_LIST"
             report["peer_process_counts"][pc_id] = (len(result["processes"]) if result.get("ok")
                                                     else result.get("code"))
 
@@ -138,6 +140,10 @@ def main():
         dashboard.show_detail()
         assert dashboard.usage_values["cpu"].get() == "—"
         report["offline_hides_old_values"] = True
+        report["peers_stay_online_after_disconnect"] = {
+            pc_id: bool(dashboard.devices.get(pc_id, {}).get("online"))
+            for pc_id in report["devices_online"] if pc_id != "PC-01"}
+        assert all(report["peers_stay_online_after_disconnect"].values())
         agent = subprocess.Popen(agent_args, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
         wait_for(lambda: dashboard.devices["PC-01"]["online"]
                  and dashboard.devices["PC-01"].get("metrics") is not None
