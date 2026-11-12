@@ -1,5 +1,6 @@
 """Display rules shared by the local dashboard and its tests."""
 from datetime import datetime, timezone
+import math
 
 
 def device_view(device, connected=True, now=None):
@@ -28,7 +29,10 @@ def device_view(device, connected=True, now=None):
 
     def fmt(field, places):
         value = metrics.get(field)
-        return f"{value:.{places}f}" if valid and value is not None else "—"
+        numeric = type(value) in (int, float) and math.isfinite(value) and value >= 0
+        if field in ("cpu_percent", "ram_percent") and numeric:
+            numeric = value <= 100
+        return f"{value:.{places}f}" if valid and numeric else "—"
 
     return {
         "name": device["pc_name"] + " / " + device["pc_id"],

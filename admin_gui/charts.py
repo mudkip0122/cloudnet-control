@@ -1,110 +1,143 @@
-"""Bounded per-PC measurement history and lightweight Tk charts."""
+"""Bounded per-PC history and rate-limited Matplotlib charts on the Tk thread."""
 from collections import deque
-from datetime import datetime
-import tkinter as tk
+from datetime import datetime, timezone
+import math
+import time
 from tkinter import ttk
+
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.dates import DateFormatter, date2num
+from matplotlib.figure import Figure
+
+FIELDS = ("cpu_percent", "ram_percent", "upload_mbps", "download_mbps")
+
+
+def metric_value(value, percent=False):
+    if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+        return None
+    return value if not percent or value <= 100 else None
 
 
 class MetricHistory:
     def __init__(self, limit=180):
+        if type(limit) is not int or limit < 1:
+            raise ValueError("History limit must be a positive integer")
         self.limit = limit
         self.samples = {}
+        self.interrupted = set()
+
+    def disconnect(self):
+        self.interrupted.update(self.samples)
 
     def update(self, devices):
         self.samples = {key: value for key, value in self.samples.items() if key in devices}
+        self.interrupted.intersection_update(devices)
         for pc_id, device in devices.items():
             metrics = device.get("metrics") or {}
             if not device.get("online") or not metrics.get("timestamp"):
+                self.interrupted.add(pc_id)
                 continue
             try:
                 stamp = datetime.fromisoformat(metrics["timestamp"].replace("Z", "+00:00"))
                 if stamp.tzinfo is None:
                     continue
                 seconds = stamp.timestamp()
-            except (ValueError, TypeError):
+            except (ValueError, TypeError, AttributeError, OverflowError):
                 continue
             points = self.samples.setdefault(pc_id, deque(maxlen=self.limit))
             if points and seconds <= points[-1][0]:
                 continue
-            points.append((seconds, dict(metrics)))
+            values = {field: metric_value(metrics.get(field), field in FIELDS[:2]) for field in FIELDS}
+            values["timestamp"] = metrics["timestamp"]
+            values["_gap_before"] = pc_id in self.interrupted
+            self.interrupted.discard(pc_id)
+            points.append((seconds, values))
+
+
+def series(points, field):
+    """NaNs break missing data and intervals over six seconds; zero stays zero."""
+    x, y, previous = [], [], None
+    for stamp, metrics in points:
+        moment = date2num(datetime.fromtimestamp(stamp, timezone.utc))
+        if previous is not None and (stamp - previous > 6 or metrics.get("_gap_before")):
+            x.append(moment)
+            y.append(float("nan"))
+        x.append(moment)
+        value = metrics.get(field)
+        y.append(value if value is not None else float("nan"))
+        previous = stamp
+    return x, y
 
 
 class LiveCharts(ttk.LabelFrame):
     def __init__(self, parent):
-        super().__init__(parent, text="선택 PC 네트워크 · 최근 180개 측정값 · 결측/6초 초과 간격은 끊어서 표시")
-        self.canvas = tk.Canvas(self, height=210, background="#ffffff", highlightthickness=0)
+        super().__init__(parent, text="선택 PC · 최근 180개 측정 · 결측/단절 구간은 연결하지 않음")
+        self.figure = Figure(figsize=(6.5, 3.6), dpi=100, layout="constrained")
+        self.axes = self.figure.subplots(2, 1, sharex=True)
+        self.lines = {}
+        for axis, fields, ylabel in (
+                (self.axes[0], (("cpu_percent", "CPU", "#2563eb"), ("ram_percent", "RAM", "#db2777")), "Usage (%)"),
+                (self.axes[1], (("upload_mbps", "Upload", "#059669"), ("download_mbps", "Download", "#d97706")), "Network (Mbps)")):
+            for field, label, color in fields:
+                self.lines[field], = axis.plot([], [], label=label, color=color, linewidth=1.5, marker=".", markersize=3)
+            axis.set_ylabel(ylabel)
+            axis.grid(True, alpha=.25)
+            axis.legend(loc="upper left", ncol=2, fontsize=8)
+        self.axes[0].set_ylim(0, 100)
+        self.axes[1].xaxis.set_major_formatter(DateFormatter("%H:%M:%S", tz=timezone.utc))
+        self.axes[1].set_xlabel("Measurement time (UTC)")
+        self.plot = FigureCanvasTkAgg(self.figure, master=self)
+        self.canvas = self.plot.get_tk_widget()
         self.canvas.pack(fill="both", expand=True)
-        self.points = ()
-        self.state = "PC를 선택하세요"
-        self.canvas.bind("<Configure>", lambda event: self.draw())
+        self.notice = ttk.Label(self, text="측정 데이터 대기")
+        self.notice.pack(fill="x", padx=8)
+        self.points, self.state, self.pc_id = (), "PC를 선택하세요", None
+        self.signature = None
+        self.last_draw = float("-inf")
+        self.pending_draw = None
+        self.bind("<Destroy>", self.on_destroy, add=True)
 
-    def show(self, points, state):
-        # Refresh the selected PC's source even when both PCs have identical traffic.
+    def show(self, points, state, pc_id=None):
         self.points = tuple(points)
-        signature = (tuple((p[0], tuple(p[1].get(k) for k in (
-            "upload_mbps", "download_mbps"))) for p in self.points), state)
-        if signature == getattr(self, "signature", None):
+        signature = (pc_id, state, tuple((stamp, tuple(metrics.get(k) for k in (*FIELDS, "_gap_before")))
+                                         for stamp, metrics in self.points))
+        if signature == self.signature:
             return
-        self.signature = signature
-        self.state = state
-        self.draw()
+        immediate = pc_id != self.pc_id or state != self.state
+        self.pc_id, self.state, self.signature = pc_id, state, signature
+        self.notice.configure(text=(f"{pc_id or '선택 PC'} · {state}" +
+            (" · 이전 측정 기록" if self.points and state != "온라인" else "")))
+        elapsed = time.monotonic() - self.last_draw
+        if immediate or elapsed >= 1:
+            self.draw()
+        elif self.pending_draw is None:
+            self.pending_draw = self.after(max(1, int((1 - elapsed) * 1000)), self.draw)
 
     def draw(self):
-        canvas = self.canvas
-        canvas.delete("all")
-        width, height = canvas.winfo_width(), canvas.winfo_height()
-        if width < 100:
-            return
-        panels = (("네트워크 (Mbps)", (("upload_mbps", "업로드", "#059669"), ("download_mbps", "다운로드", "#d97706")), None),)
-        for panel, (title, fields, ceiling) in enumerate(panels):
-            left, right = 58, width - 22
-            top, bottom = 40, height - 34
-            canvas.create_text(left, 14, text=title, anchor="w", fill="#334155")
-            latest = self.points[-1][1] if self.points and self.state == "온라인" else {}
-            for index, (field, label, color) in enumerate(fields):
-                value = latest.get(field)
-                speed = f"{value:.2f} Mbps" if value is not None else "— Mbps"
-                canvas.create_text(right - index * 200, 14,
-                                   text=f"{label}  {speed}", anchor="e", fill=color,
-                                   font=("Segoe UI", 11, "bold"))
-            values = [m.get(field) for _, m in self.points for field, _, _ in fields if m.get(field) is not None]
-            maximum = ceiling or max(1, max(values, default=0) * 1.15)
-            for fraction in (0, .5, 1):
-                y = bottom - fraction * (bottom - top)
-                canvas.create_line(left, y, right, y, fill="#e2e8f0")
-                canvas.create_text(left - 6, y, text=f"{fraction * maximum:.1f}", anchor="e", fill="#64748b")
-            if not self.points:
-                canvas.create_text((left + right) / 2, (top + bottom) / 2, text="측정 데이터 대기", fill="#64748b")
-                continue
-            start, end = self.points[0][0], self.points[-1][0]
-            span = max(2, end - start)
-            for stamp, anchor, x in ((start, "w", left), (end, "e", right)):
-                canvas.create_text(x, bottom + 16, text=datetime.fromtimestamp(stamp).strftime("%H:%M:%S"), anchor=anchor, fill="#64748b")
-            for field, _, color in fields:
-                segment = []
-                previous_stamp = None
+        if self.pending_draw is not None:
+            self.after_cancel(self.pending_draw)
+            self.pending_draw = None
+        for field, line in self.lines.items():
+            line.set_data(*series(self.points, field))
+        if self.points:
+            first, last = self.points[0][0], self.points[-1][0]
+            if first == last:
+                first, last = first - 2, last + 2
+            self.axes[1].set_xlim(*[date2num(datetime.fromtimestamp(stamp, timezone.utc)) for stamp in (first, last)])
+        else:
+            self.axes[1].set_xlim(0, 1)
+        traffic = [m[field] for _, m in self.points for field in FIELDS[2:] if m.get(field) is not None]
+        self.axes[1].set_ylim(0, max(1, max(traffic, default=0) * 1.15))
+        self.last_draw = time.monotonic()
+        self.plot.draw_idle()
 
-                def draw_segment():
-                    if len(segment) >= 4:
-                        canvas.create_line(*segment, fill=color, width=2,
-                                           smooth=True, splinesteps=24,
-                                           capstyle="round", joinstyle="round")
-                    elif segment:
-                        x, y = segment
-                        canvas.create_oval(x - 2, y - 2, x + 2, y + 2, fill=color, outline=color)
-
-                for stamp, metrics in self.points:
-                    value = metrics.get(field)
-                    if value is None or (previous_stamp is not None and stamp - previous_stamp > 6):
-                        draw_segment()
-                        segment = []
-                    if value is None:
-                        previous_stamp = None
-                        continue
-                    x = left + (stamp - start) / span * (right - left)
-                    y = bottom - min(maximum, max(0, value)) / maximum * (bottom - top)
-                    segment.extend((x, y))
-                    previous_stamp = stamp
-                draw_segment()
-            if self.state != "온라인":
-                canvas.create_text((left + right) / 2, top + 14, text=self.state + " · 이전 측정 기록", fill="#b45309")
+    def on_destroy(self, event):
+        if event.widget is self:
+            if self.pending_draw is not None:
+                self.after_cancel(self.pending_draw)
+                self.pending_draw = None
+            idle = getattr(self.plot, "_idle_draw_id", None)
+            if idle:
+                self.after_cancel(idle)
+                self.plot._idle_draw_id = None
+            self.figure.clear()

@@ -33,6 +33,7 @@ class Dashboard:
         self.devices = {}
         self.connected = False
         self.history = MetricHistory()
+        self.snapshot_received = None
         self.process_window = None
         root.title("CloudNet Control — " + ("SAMPLE DATA / OFFLINE" if sample else "PC 모니터링"))
         root.geometry("1100x940")
@@ -60,15 +61,18 @@ class Dashboard:
                 ("name", "PC 이름 / ID"), ("state", "상태"),
                 ("up", "업로드 Mbps"), ("down", "다운로드 Mbps"),
                 ("time", "측정 시각 UTC"), ("received", "서버 최근 수신 UTC"),
-                ("age", "측정 후 경과"))):
+                ("age", "측정 후 경과"), ("gui_received", "GUI 목록 수신 UTC"),
+                ("snapshot_age", "목록 수신 후 경과"))):
             value = tk.StringVar(value="—")
             self.details[key] = value
             ttk.Label(detail, text=label).grid(row=index, column=0, sticky="w", padx=12, pady=2)
             ttk.Label(detail, textvariable=value).grid(row=index, column=1, sticky="w", padx=12)
+        self.preview_buttons = []
         for row, action in enumerate(("PC 종료", "PC 재부팅")):
-            ctk.CTkButton(detail, text=action,
-                          command=lambda action=action: self.preview_command(action)).grid(
-                              row=row, column=2, padx=20, pady=4)
+            button = ctk.CTkButton(detail, text=action,
+                                  command=lambda action=action: self.preview_command(action))
+            button.grid(row=row, column=2, padx=20, pady=4)
+            self.preview_buttons.append(button)
         ttk.Label(detail, text="PC 제어 미연동 · 확인창만 표시").grid(row=2, column=2)
         self.process_button = ctk.CTkButton(detail, text="프로세스 목록", command=self.open_processes,
                                           state="disabled")
@@ -173,11 +177,13 @@ class Dashboard:
             connected, data = self.updates.get_nowait()
             self.connected = connected
             if not connected:
+                self.history.disconnect()
                 self.connection_state = "error"
                 self.status.set(data)
                 if self.context:
                     self.auth_state = "실패" if data.startswith("인증 실패") else "연결 미확인"
             else:
+                self.snapshot_received = datetime.now(timezone.utc)
                 self.connection_state = "normal" if data else "empty"
                 self.auth_state = "성공" if self.context and self.token else "미사용"
                 if self.sample:
@@ -216,13 +222,17 @@ class Dashboard:
         selection = self.table.selection()
         device = self.devices.get(selection[0]) if selection else None
         view = device_view(device, self.connected, now=self.sample_now) if device else {}
+        if device and self.snapshot_received is not None:
+            view["gui_received"] = self.snapshot_received.isoformat()
+            view["snapshot_age"] = ("샘플 · 시각 고정" if self.sample else
+                f"{max(0, (datetime.now(timezone.utc) - self.snapshot_received).total_seconds()):.1f}초")
         for key, variable in self.details.items():
             variable.set(view.get(key, "—"))
         for key, variable in self.usage_values.items():
             value = view.get(key, "—")
             variable.set(value + " %" if value != "—" else "—")
         points = self.history.samples.get(selection[0], ()) if device else ()
-        self.charts.show(points, view.get("state", "PC를 선택하세요"))
+        self.charts.show(points, view.get("state", "PC를 선택하세요"), selection[0] if device else None)
         if self.sample:
             hint = "샘플 모드 · 실제 프로세스 조회·종료 불가"
         elif self.context is None or not self.token:
@@ -235,10 +245,12 @@ class Dashboard:
             hint = "Agent의 프로세스 제어가 활성화되어 있어야 합니다"
         self.process_hint.set(hint)
         available = (not self.sample and self.context is not None and bool(self.token)
-                     and self.connected and device and device.get("online"))
+                     and self.connected and device and view.get("state") == "온라인")
         self.process_button.configure(state="normal" if available else "disabled")
+        for button in self.preview_buttons:
+            button.configure(state="normal" if device and view.get("state") == "온라인" else "disabled")
         if self.process_window is not None and not self.process_window.closed:
-            self.process_window.set_target(device, self.connected)
+            self.process_window.set_target(device, self.connected and view.get("state") == "온라인")
 
     def open_processes(self):
         if self.sample or self.context is None or not self.token or not self.connected:
