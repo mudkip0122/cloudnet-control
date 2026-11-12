@@ -4,6 +4,8 @@
 B 원 규격: `3a091ef`. 현재 통합 B: `57b530b`, C: `35004c3`.
 A의 구독·공유 상태·시험 지원 플래그 구현 커밋: `c5ecfef`.
 
+후속 B `b6f76c0`의 Chrome 이탈/복귀·활성 창 감시 상태 이벤트와 `exam_foreground_v1`은 A `18139f1`에 구현되어 있습니다. C 최신 `b257588`의 새 kind 처리도 통합했습니다. [A 전경 감시 연동](a-foreground-integration.md)에 최신 검증 및 공동 시연의 남은 범위를 기록합니다.
+
 이 문서는 C의 연동 요청에 따라 A가 지원하는 서버 형식입니다. B의 COMMAND·COMMAND_RESULT·EXAM_EVENT·METRICS 필드는 변경하지 않습니다. A는 B Agent/C GUI 소스를 직접 수정하지 않았습니다. 통합 브랜치의 지원이며 운영 EC2 배포 완료를 의미하지 않습니다.
 
 ## 1. 명령과 결과

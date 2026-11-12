@@ -1,4 +1,4 @@
-"""Validate the B 3a091ef contract without importing Agent or GUI code."""
+"""Validate B exam contracts, including b6f76c0 foreground events."""
 from datetime import datetime
 import math
 import re
@@ -98,6 +98,25 @@ def exam_event(message, pc_id):
                 or not number(message.get("poll_interval"), .5, 60)):
             raise ValueError("Invalid monitor status")
         clean.update({key: message[key] for key in ("status", "unreadable_count", "poll_interval")})
+    elif kind == "EXAM_WINDOW_CHANGED":
+        transition = message.get("transition")
+        if transition not in ("left", "returned"):
+            raise ValueError("Invalid foreground transition")
+        for key in ("previous_process", "process"):
+            process = message.get(key)
+            if not identity(process) or not executable(process.get("name")):
+                raise ValueError("Invalid foreground process identity")
+            clean[key] = {field: process[field] for field in ("pid", "name", "create_time")}
+        was_chrome = clean["previous_process"]["name"].casefold() == "chrome.exe"
+        is_chrome = clean["process"]["name"].casefold() == "chrome.exe"
+        if (transition == "left" and (not was_chrome or is_chrome)
+                or transition == "returned" and (was_chrome or not is_chrome)):
+            raise ValueError("Foreground transition does not match process names")
+        clean["transition"] = transition
+    elif kind == "FOREGROUND_MONITOR_STATUS":
+        if message.get("status") not in ("ok", "unavailable"):
+            raise ValueError("Invalid foreground monitor status")
+        clean["status"] = message["status"]
     else:
         raise ValueError("Unsupported exam event kind")
     return clean
