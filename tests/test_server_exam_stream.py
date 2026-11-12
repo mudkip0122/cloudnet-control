@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from agent.exam_commands import ExamCommands
+from agent.exam import DEFAULT_FORBIDDEN_PROCESSES
 from agent.main import stream
 from admin_gui.exam_events import ExamEventClient, ExamStore
 from admin_gui.presentation import device_view
@@ -205,6 +206,27 @@ class ExamStreamTests(unittest.TestCase):
         for role, fields in (("agent", dict(subscribe_exam=True)), ("admin", dict(subscribe_exam="true"))):
             _, result = self.connect(role, **fields)
             self.assertEqual(result["type"], "ERROR")
+
+    def test_omitted_policy_and_explicit_replacement_through_tls_relay(self):
+        agent, _ = self.connect("agent")
+        admin, _ = self.connect()
+        handler = ExamCommands("PC-01", enabled=True)
+        handler.start_session()
+        for command_id, fields, expected in (
+                ("default-policy", {}, sorted(DEFAULT_FORBIDDEN_PROCESSES)),
+                ("replace-policy", dict(forbidden_processes=["DEMO.exe"]), ["demo.exe"])):
+            request = dict(type="COMMAND", action="SET_EXAM_MODE", command_id=command_id, target_id="PC-01",
+                expires_at=(datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat(),
+                enabled=True, exam_id="exam-policy", **fields)
+            send_message(admin, request)
+            forwarded = recv_message(agent)
+            self.assertEqual(forwarded, request)
+            result = handler.handle(forwarded)[0]
+            send_message(agent, result)
+            received = recv_message(admin)
+            self.assertEqual(received, result)
+            self.assertTrue(received["ok"])
+            self.assertEqual(received["exam_mode"]["forbidden_processes"], expected)
 
     def test_c_35004c3_client_receives_a_events_mode_rtt_and_reconnect(self):
         agent, _ = self.connect("agent")

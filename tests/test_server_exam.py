@@ -46,6 +46,20 @@ class ContractTests(unittest.TestCase):
             self.assertEqual(command_error(good | changes), "INVALID_EXAM_SETTINGS")
         self.assertIsNone(command_error(request("SET_EXAM_MODE", enabled=False, exam_id="exam-1")))
 
+    def test_omitted_policy_delegates_to_agent_but_null_and_empty_are_rejected(self):
+        omitted = request("SET_EXAM_MODE", enabled=True, exam_id="exam-default")
+        self.assertIsNone(command_error(omitted))
+        self.assertNotIn("forbidden_processes", omitted)
+        for value in (None, [], "discord.exe", ["*.exe"]):
+            self.assertEqual(command_error(omitted | dict(forbidden_processes=value)), "INVALID_EXAM_SETTINGS")
+        self.assertEqual(command_error(omitted | dict(poll_interval=0)), "INVALID_EXAM_SETTINGS")
+
+    def test_enabled_result_must_include_resolved_policy(self):
+        req = request("SET_EXAM_MODE", enabled=True, exam_id="exam-default")
+        with self.assertRaises(ValueError):
+            command_result(req, dict(ok=True, code="EXAM_MODE_ENABLED", exam_mode=dict(
+                enabled=True, exam_id="exam-default", poll_interval=1, monitor_status="starting")))
+
     def test_rtt_compatibility_and_invalid_combinations(self):
         self.assertEqual(rtt_fields(metric()), {})
         stamp = datetime.now(timezone.utc).isoformat()

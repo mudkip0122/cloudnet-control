@@ -13,7 +13,7 @@ C 합의 문서의 A `ef3f64e` 미구현 안내는 이전 버전 기준입니다
 
 ## 호환 확인
 
-1. 세 새 action은 B 요청과 COMMAND_RESULT를 유지합니다. C는 forbidden_processes를 명시적으로 보내므로 B 최신의 기본 목록 생략 기능을 A가 아직 허용하지 않아도 호환됩니다. A에서 생략 정책을 임의로 변경하지 않았습니다.
+1. 세 새 action은 B 요청과 COMMAND_RESULT를 유지합니다. 후속 사용자 요청으로 A도 forbidden_processes 생략을 허용해 B 기본 목록을 사용하도록 맞췄습니다. 명시한 목록은 기본 목록을 대체하고 null/빈 목록은 거절합니다. 실제 적용 목록은 B 성공 응답으로 확인합니다.
 2. C의 별도 구독 연결은 subscribe_exam:true로 등록합니다. A는 검증·저장한 원문 EXAM_EVENT를 보내며 중복 event_id를 다시 중계하지 않습니다. C의 수신 큐/이력/중복 억제는 C 구현을 그대로 사용합니다.
 3. C 현재 버전은 구독 등록에 subscribe_status:true를 넣지 않습니다. 따라서 다른 관리자의 모드 변경·연결 변화는 현재 C의 1초 LIST_DEVICES 폴링에서 전달됩니다. 즉시 STATUS_UPDATE push까지 원하면 C 담당자가 그 구독 플래그를 추가할 수 있습니다. 현재 폴링 동기화도 정상 지원하며 필수 수정은 아닙니다.
 4. C는 metrics_stale·last_metrics_received를 사용하고 Agent 시각 범위를 보수적으로 검사합니다. A가 추가로 제공하는 rtt_stale·rtt_age_seconds를 C가 아직 사용하지 않아도 기존 보수적 표시와 호환됩니다. 시계 오차가 크면 C에서 수치가 숨겨질 수 있습니다.

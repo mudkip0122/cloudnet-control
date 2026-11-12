@@ -54,9 +54,11 @@ def command_error(request):
         if request["enabled"]:
             names = request.get("forbidden_processes")
             interval = request.get("poll_interval", 1)
-            if (not isinstance(names, list) or not 1 <= len(names) <= 100
-                    or not all(executable(name) for name in names)
-                    or not number(interval, .5, 60)):
+            if ("forbidden_processes" in request and
+                    (not isinstance(names, list) or not 1 <= len(names) <= 100
+                     or not all(executable(name) for name in names))):
+                return "INVALID_EXAM_SETTINGS"
+            if not number(interval, .5, 60):
                 return "INVALID_EXAM_SETTINGS"
     return None
 
@@ -136,7 +138,7 @@ def command_result(request, message):
             raise ValueError("Invalid exam mode result")
         if mode["enabled"]:
             check = dict(mode, action="SET_EXAM_MODE")
-            if (command_error(check) or mode.get("monitor_status") not in
+            if ("forbidden_processes" not in mode or command_error(check) or mode.get("monitor_status") not in
                     ("starting", "ok", "partial", "unavailable")):
                 raise ValueError("Invalid enabled exam state")
         elif (mode.get("forbidden_processes") != [] or mode.get("poll_interval") is not None
