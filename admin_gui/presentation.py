@@ -34,9 +34,23 @@ def device_view(device, connected=True, now=None):
             numeric = value <= 100
         return f"{value:.{places}f}" if valid and numeric else "—"
 
+    rtt = "—"
+    if valid:
+        status = metrics.get("rtt_status")
+        rtt = {"pending": "측정 대기", "timeout": "응답 지연"}.get(status, "—")
+        if status == "ok":
+            try:
+                stamp = datetime.fromisoformat(metrics["rtt_timestamp"].replace("Z", "+00:00"))
+                value = metrics.get("rtt_ms")
+                if (stamp.tzinfo is not None and -6 <= (now - stamp).total_seconds() <= 8
+                        and type(value) in (int, float) and math.isfinite(value) and value >= 0):
+                    rtt = f"{value:.1f} ms"
+            except (KeyError, ValueError, TypeError, AttributeError):
+                pass
+
     return {
         "name": device["pc_name"] + " / " + device["pc_id"],
-        "state": state,
+        "state": state, "rtt": rtt,
         "cpu": fmt("cpu_percent", 1), "ram": fmt("ram_percent", 1),
         "up": fmt("upload_mbps", 2), "down": fmt("download_mbps", 2),
         "time": metrics.get("timestamp", "—"),

@@ -6,8 +6,28 @@ import json
 import math
 import ntpath
 import os
+import time
+from datetime import datetime, timezone
 
 import psutil
+
+MAX_BATCH_TARGETS = 100
+BATCH_SECONDS = 5
+
+
+def validate_batch_targets(targets):
+    """Validate the entire explicit snapshot before terminating any PID."""
+    if not isinstance(targets, list) or not 1 <= len(targets) <= MAX_BATCH_TARGETS:
+        raise ValueError("Expected 1-100 explicit process identities")
+    seen = set()
+    for row in targets:
+        if not isinstance(row, dict):
+            raise ValueError("Invalid process identity")
+        pid, created = row.get("pid"), row.get("create_time")
+        if (type(pid) is not int or pid <= 0 or pid in seen
+                or type(created) not in (int, float) or not math.isfinite(created) or created <= 0):
+            raise ValueError("Invalid or duplicate process identity")
+        seen.add(pid)
 
 PROTECTED_NAMES = frozenset({
     "system", "system idle process", "registry", "secure system", "memory compression",
@@ -108,7 +128,7 @@ class ProcessManager:
             rows.append(row)
         return sorted(rows, key=lambda row: row["pid"])
 
-    def stop(self, pid, create_time):
+    def stop(self, pid, create_time, wait_timeout=2):
         if (type(pid) is not int or pid <= 0 or isinstance(create_time, bool)
                 or not isinstance(create_time, (int, float))
                 or not math.isfinite(create_time) or create_time <= 0):
@@ -123,7 +143,7 @@ class ProcessManager:
             # psutil.terminate also checks process identity before signalling.
             process.terminate()
             try:
-                process.wait(timeout=2)
+                process.wait(timeout=wait_timeout)
                 return {"ok": True, "code": "TERMINATED"}
             except psutil.TimeoutExpired:
                 return {"ok": True, "code": "TERMINATION_REQUESTED"}
@@ -133,6 +153,25 @@ class ProcessManager:
             return {"ok": False, "code": "ACCESS_DENIED"}
         except (psutil.Error, OSError):
             return {"ok": False, "code": "PROCESS_ERROR"}
+
+    def stop_many(self, targets, expires_at):
+        validate_batch_targets(targets)
+        deadline = time.monotonic() + BATCH_SECONDS
+        outcomes = []
+        for row in targets:
+            pid, created = row["pid"], row["create_time"]
+            remaining = (expires_at - datetime.now(timezone.utc)).total_seconds()
+            budget = deadline - time.monotonic()
+            if remaining <= 0:
+                outcome = {"ok": False, "code": "EXPIRED_DURING_BATCH"}
+            elif budget <= 0:
+                outcome = {"ok": False, "code": "BATCH_TIME_LIMIT"}
+            else:
+                # Every target goes through the same live identity/protection
+                # check as single stop; never enumerate extra same-name PIDs.
+                outcome = self.stop(pid, created, wait_timeout=min(.1, remaining, budget))
+            outcomes.append({"pid": pid, "create_time": created} | outcome)
+        return outcomes
 
 
 def main():

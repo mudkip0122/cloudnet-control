@@ -14,6 +14,7 @@ from common.security import client_arguments, client_settings, connect
 from admin_gui.presentation import device_view
 from admin_gui.charts import LiveCharts, MetricHistory
 from admin_gui.process_window import ProcessWindow
+from admin_gui.exam_window import ExamWindow
 
 
 class Dashboard:
@@ -35,6 +36,7 @@ class Dashboard:
         self.history = MetricHistory()
         self.snapshot_received = None
         self.process_window = None
+        self.exam_window = None
         root.title("CloudNet Control — " + ("SAMPLE DATA / OFFLINE" if sample else "PC 모니터링"))
         root.geometry("1100x940")
         root.minsize(950, 900)
@@ -45,9 +47,9 @@ class Dashboard:
         self.update_connection_details()
         self.event_status = tk.StringVar(value="초기 전체 목록 대기")
         ctk.CTkLabel(root, textvariable=self.event_status).pack()
-        columns = ("name", "state", "up", "down", "time")
+        columns = ("name", "state", "cpu", "ram", "up", "down", "rtt", "time")
         self.table = ttk.Treeview(root, columns=columns, show="headings", height=8)
-        for col, title in zip(columns, ("PC 이름 / ID", "상태", "업로드 Mbps", "다운로드 Mbps", "측정 시각 UTC")):
+        for col, title in zip(columns, ("PC 이름 / ID", "상태", "CPU %", "RAM %", "업로드 Mbps", "다운로드 Mbps", "서버 RTT(ms)", "측정 시각 UTC")):
             self.table.heading(col, text=title)
             self.table.column(col, width=120, anchor="center")
         self.table.column("name", width=200)
@@ -62,7 +64,7 @@ class Dashboard:
                 ("up", "업로드 Mbps"), ("down", "다운로드 Mbps"),
                 ("time", "측정 시각 UTC"), ("received", "서버 최근 수신 UTC"),
                 ("age", "측정 후 경과"), ("gui_received", "GUI 목록 수신 UTC"),
-                ("snapshot_age", "목록 수신 후 경과"))):
+                ("snapshot_age", "목록 수신 후 경과"), ("rtt", "서버 RTT(ms)"))):
             value = tk.StringVar(value="—")
             self.details[key] = value
             ttk.Label(detail, text=label).grid(row=index, column=0, sticky="w", padx=12, pady=2)
@@ -77,6 +79,8 @@ class Dashboard:
         self.process_button = ctk.CTkButton(detail, text="프로세스 목록", command=self.open_processes,
                                           state="disabled")
         self.process_button.grid(row=3, column=2, padx=20, pady=4)
+        self.exam_button = ctk.CTkButton(detail, text="시험 모드", command=self.open_exam, state="disabled")
+        self.exam_button.grid(row=5, column=2, padx=20, pady=4)
         self.process_hint = tk.StringVar()
         ttk.Label(detail, textvariable=self.process_hint, wraplength=260).grid(row=4, column=2, padx=12)
         monitoring = ttk.Frame(root)
@@ -208,7 +212,7 @@ class Dashboard:
                 self.table.delete(pc_id)
         for pc_id, device in self.devices.items():
             view = device_view(device, self.connected, now=self.sample_now)
-            values = tuple(view[key] for key in ("name", "state", "up", "down", "time"))
+            values = tuple(view[key] for key in ("name", "state", "cpu", "ram", "up", "down", "rtt", "time"))
             if self.table.exists(pc_id):
                 self.table.item(pc_id, values=values)
             else:
@@ -249,8 +253,19 @@ class Dashboard:
         self.process_button.configure(state="normal" if available else "disabled")
         for button in self.preview_buttons:
             button.configure(state="normal" if device and view.get("state") == "온라인" else "disabled")
+        self.exam_button.configure(state="normal" if available else "disabled")
         if self.process_window is not None and not self.process_window.closed:
             self.process_window.set_target(device, self.connected and view.get("state") == "온라인")
+        if self.exam_window is not None and not self.exam_window.closed:
+            self.exam_window.set_target(device, self.connected and view.get("state") == "온라인")
+
+    def open_exam(self):
+        if self.sample or self.context is None or not self.token or not self.connected:
+            return
+        if self.exam_window is None or self.exam_window.closed:
+            self.exam_window = ExamWindow(self)
+        self.show_detail()
+        self.exam_window.window.lift()
 
     def open_processes(self):
         if self.sample or self.context is None or not self.token or not self.connected:
@@ -281,6 +296,8 @@ class Dashboard:
         self.closed = True
         if self.process_window is not None:
             self.process_window.close()
+        if self.exam_window is not None:
+            self.exam_window.close()
         self.stop.set()
         if self.sock is not None:
             try:
@@ -292,7 +309,9 @@ class Dashboard:
 
     def finish_close(self):
         process_client = self.process_window.client if self.process_window is not None else None
-        if self.worker.is_alive() or (process_client is not None and process_client.worker.is_alive()):
+        exam_client = self.exam_window.client if self.exam_window is not None else None
+        if (self.worker.is_alive() or (process_client is not None and process_client.worker.is_alive())
+                or (exam_client is not None and exam_client.worker.is_alive())):
             self.root.after(50, self.finish_close)
         else:
             self.worker.join()
