@@ -5,6 +5,7 @@ import re
 import uuid
 
 import psutil
+from agent.foreground import ForegroundMonitor
 
 
 # Chrome remains available for the exam. Explicit policies replace this preset.
@@ -20,7 +21,7 @@ DEFAULT_FORBIDDEN_PROCESSES = (
 
 
 class ExamMonitor:
-    def __init__(self, pc_id, exam_id, forbidden_names=None, interval=1):
+    def __init__(self, pc_id, exam_id, forbidden_names=None, interval=1, *, foreground_enabled=False):
         if not isinstance(exam_id, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", exam_id):
             raise ValueError("--exam-id requires 1-64 letters, digits, _, . or -")
         if forbidden_names is None:
@@ -43,6 +44,7 @@ class ExamMonitor:
         self.interval = interval
         self.seen = set()
         self.health = None
+        self.foreground = ForegroundMonitor() if foreground_enabled else None
 
     def event(self, kind, **fields):
         return dict(type="EXAM_EVENT", version=1, event_id=str(uuid.uuid4()),
@@ -93,4 +95,6 @@ class ExamMonitor:
                                         unreadable_count=len(unreadable),
                                         poll_interval=self.interval))
             self.health = health
+        if self.foreground is not None:
+            events.extend(self.foreground.scan(self.event))
         return events
