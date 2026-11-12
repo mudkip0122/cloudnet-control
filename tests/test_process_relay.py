@@ -15,6 +15,7 @@ class ProcessRelayTests(unittest.TestCase):
         self.agent = Mock(spec=ssl.SSLSocket)
         self.state.sessions["pc"] = self.agent
         self.state.send = Mock()
+        self.state.notify_admin = self.state.send
 
     def test_plaintext_control_rejected(self):
         admin = Mock(spec=socket.socket)
