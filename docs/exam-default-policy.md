@@ -3,6 +3,33 @@
 시험모드는 실행을 차단하거나 프로세스를 종료하지 않고 감지 이벤트를 보냅니다.
 Chrome(`chrome.exe`)은 시험 응시용으로 기본 목록에서 제외합니다.
 
+## 종류별 감지 조건 (B 후속 변경)
+
+- 아래 메신저·다른 브라우저·AI 앱의 알려진 이름은 표시된 최상위 창이 있을 때만 감지합니다.
+  트레이/숨김·최소화·DWM cloaked 창은 제외합니다. 다른 창에 가려져 있어도
+  Windows 표시 상태가 유지된 창은 포함합니다. 실제 사용 여부는 전경 전환 이력과 별개입니다.
+- 원격제어 목록은 창 없이 실행 중이어도 감지합니다.
+- 직접 지정한 목록에도 알려진 이름별 조건이 적용됩니다. 목록 지정이 기본 목록을 대체하는 규칙은 같습니다.
+  분류되지 않은 사용자 지정 실행 파일은 종전처럼 모든 실행 인스턴스를 감지합니다.
+- 일반 앱을 숨김/최소화했다가 다시 표시하면 같은 PID라도 재감지합니다.
+  한 번의 표시 상태가 유지되는 동안 중복 알림은 보내지 않습니다.
+- 창 조회 실패/비Windows에서는 일반 앱 감지를 추측하지 않고 MONITOR_STATUS=partial을 보냅니다.
+  직전 감지 중복 상태는 보존하며 원격제어·미분류 프로그램 검사는 계속합니다.
+- Windows 사용자 데스크톱에서 실행해야 합니다. 별도 세션·서비스와 일부 패키지 앱의
+  대리 창 프로세스까지 완전한 연관성을 보장하지 않습니다.
+
+### A·C 인계
+
+이 변경은 B의 감지 조건만 바꾸며 이벤트 필드·종류·명령 규격은 추가하지 않습니다.
+A 서버 변경 요청은 없습니다. C는 안내를 “일반 앱은 표시 창 기준, 원격제어는 백그라운드 포함”으로
+맞추면 됩니다. 이력 자체에 창 상태를 나타내는 새 필드는 없습니다.
+창 조회 실패의 partial과 전경 감시 unavailable은 서로 다른 상태입니다.
+실제 Windows 최소화/트레이/복원 공동 검증은 남아 있으며 기존 감지 이력은 삭제하지 않습니다.
+운영 Agent는 자동 재시작하지 않았습니다. 소유자와 검증 시각을 맞춰 재시작 후 새 시험에서 확인합니다.
+
+API 기준: [IsWindowVisible](https://learn.microsoft.com/en-us/windows/desktop/api/winuser/nf-winuser-iswindowvisible),
+[DWMWINDOWATTRIBUTE](https://learn.microsoft.com/en-us/windows/win32/api/dwmapi/ne-dwmapi-dwmwindowattribute).
+
 ## 기본 대상
 
 - 메신저: discord.exe, discordcanary.exe, discordptb.exe, kakaotalk.exe,
