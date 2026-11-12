@@ -54,10 +54,11 @@ def command_error(request):
         if request["enabled"]:
             names = request.get("forbidden_processes")
             interval = request.get("poll_interval", 1)
-            if ("forbidden_processes" in request and (
-                    not isinstance(names, list) or not 1 <= len(names) <= 100
-                    or not all(executable(name) for name in names))
-                    or not number(interval, .5, 60)):
+            if ("forbidden_processes" in request and
+                    (not isinstance(names, list) or not 1 <= len(names) <= 100
+                     or not all(executable(name) for name in names))):
+                return "INVALID_EXAM_SETTINGS"
+            if not number(interval, .5, 60):
                 return "INVALID_EXAM_SETTINGS"
     return None
 

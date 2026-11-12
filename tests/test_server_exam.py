@@ -46,10 +46,11 @@ class ContractTests(unittest.TestCase):
             self.assertEqual(command_error(good | changes), "INVALID_EXAM_SETTINGS")
         self.assertIsNone(command_error(request("SET_EXAM_MODE", enabled=False, exam_id="exam-1")))
 
-    def test_missing_exam_policy_is_allowed_but_explicit_empty_or_null_is_not(self):
+    def test_omitted_policy_delegates_to_agent_but_null_and_empty_are_rejected(self):
         default = request('SET_EXAM_MODE', enabled=True, exam_id='exam-1')
         self.assertIsNone(command_error(default))
-        for invalid in ([], None, '', ['*.exe']):
+        self.assertNotIn('forbidden_processes', default)
+        for invalid in ([], None, '', 'discord.exe', ['*.exe']):
             self.assertEqual(command_error(default | dict(forbidden_processes=invalid)), 'INVALID_EXAM_SETTINGS')
         self.assertEqual(command_error(default | dict(poll_interval=0)), 'INVALID_EXAM_SETTINGS')
 
