@@ -6,6 +6,7 @@ import uuid
 
 import psutil
 from agent.foreground import ForegroundMonitor
+from agent.window_inventory import displayed_process_ids
 
 
 # Chrome remains available for the exam. Explicit policies replace this preset.
@@ -18,6 +19,13 @@ DEFAULT_FORBIDDEN_PROCESSES = (
     "msedge.exe", "firefox.exe", "brave.exe", "opera.exe", "vivaldi.exe",
     "chatgpt.exe", "claude.exe",
 )
+
+BACKGROUND_SENSITIVE_PROCESSES = frozenset((
+    "anydesk.exe", "teamviewer.exe", "teamviewer_service.exe", "rustdesk.exe",
+    "mstsc.exe", "vncviewer.exe", "winvnc.exe",
+))
+# Unknown explicitly configured names retain the existing all-process policy.
+WINDOW_REQUIRED_PROCESSES = frozenset(DEFAULT_FORBIDDEN_PROCESSES) - BACKGROUND_SENSITIVE_PROCESSES
 
 
 class ExamMonitor:
@@ -62,6 +70,14 @@ class ExamMonitor:
         unreadable = set()
         events = []
         scan_failed = False
+        windows = set()
+        window_scan_failed = False
+        if self.names & WINDOW_REQUIRED_PROCESSES:
+            try:
+                windows = displayed_process_ids()
+            except OSError:
+                windows = None
+            window_scan_failed = windows is None
         try:
             for process in psutil.process_iter():
                 try:
@@ -71,6 +87,12 @@ class ExamMonitor:
                         continue
                     if name.casefold() not in self.names:
                         continue
+                    if name.casefold() in WINDOW_REQUIRED_PROCESSES:
+                        if window_scan_failed:
+                            unreadable.add(process.pid)
+                            continue
+                        if process.pid not in windows:
+                            continue
                     created = process.create_time()
                     if not isinstance(created, (int, float)) or not math.isfinite(created) or created <= 0:
                         unreadable.add(process.pid)
@@ -89,7 +111,7 @@ class ExamMonitor:
             scan_failed = True
         self.seen = current | (self.seen if scan_failed else
                                {key for key in self.seen if key[0] in unreadable})
-        health = ("unavailable" if scan_failed else "partial" if unreadable else "ok")
+        health = ("unavailable" if scan_failed else "partial" if unreadable or window_scan_failed else "ok")
         if health != self.health:
             events.insert(0, self.event("MONITOR_STATUS", status=health,
                                         unreadable_count=len(unreadable),

@@ -23,7 +23,7 @@ def process(pid=21, name="Forbidden.EXE", created=100):
 class ExamTests(unittest.TestCase):
     def test_default_policy_detects_messenger_but_allows_exam_chrome(self):
         monitor = ExamMonitor("pc", "exam")
-        with patch("agent.exam.psutil.process_iter", return_value=[
+        with patch("agent.exam.displayed_process_ids", return_value={21, 24}), patch("agent.exam.psutil.process_iter", return_value=[
                 process(21, "Discord.EXE"), process(22, "chrome.exe"),
                 process(23, "AnyDesk.exe"), process(24, "firefox.exe")]):
             events = self.detections(monitor.scan())
