@@ -15,7 +15,6 @@ from agent.main import stream
 from admin_gui.exam_events import ExamEventClient, ExamStore
 from admin_gui.presentation import device_view
 from admin_gui.exam_window import exam_request
-from agent.exam import DEFAULT_FORBIDDEN_PROCESSES
 from common.protocol import recv_message, send_message
 from server.audit import AuditStore
 from server.main import MonitoringServer

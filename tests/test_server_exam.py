@@ -47,18 +47,21 @@ class ContractTests(unittest.TestCase):
         self.assertIsNone(command_error(request("SET_EXAM_MODE", enabled=False, exam_id="exam-1")))
 
     def test_omitted_policy_delegates_to_agent_but_null_and_empty_are_rejected(self):
-        omitted = request("SET_EXAM_MODE", enabled=True, exam_id="exam-default")
-        self.assertIsNone(command_error(omitted))
-        self.assertNotIn("forbidden_processes", omitted)
-        for value in (None, [], "discord.exe", ["*.exe"]):
-            self.assertEqual(command_error(omitted | dict(forbidden_processes=value)), "INVALID_EXAM_SETTINGS")
-        self.assertEqual(command_error(omitted | dict(poll_interval=0)), "INVALID_EXAM_SETTINGS")
+        default = request('SET_EXAM_MODE', enabled=True, exam_id='exam-1')
+        self.assertIsNone(command_error(default))
+        self.assertNotIn('forbidden_processes', default)
+        for invalid in ([], None, '', 'discord.exe', ['*.exe']):
+            self.assertEqual(command_error(default | dict(forbidden_processes=invalid)), 'INVALID_EXAM_SETTINGS')
+        self.assertEqual(command_error(default | dict(poll_interval=0)), 'INVALID_EXAM_SETTINGS')
 
-    def test_enabled_result_must_include_resolved_policy(self):
-        req = request("SET_EXAM_MODE", enabled=True, exam_id="exam-default")
+    def test_enabled_result_must_still_include_the_resolved_policy(self):
+        req = request('SET_EXAM_MODE', enabled=True, exam_id='exam-1')
+        mode = dict(enabled=True, exam_id='exam-1', poll_interval=1, monitor_status='starting')
+        response = dict(ok=True, code='EXAM_MODE_ENABLED', exam_mode=mode)
         with self.assertRaises(ValueError):
-            command_result(req, dict(ok=True, code="EXAM_MODE_ENABLED", exam_mode=dict(
-                enabled=True, exam_id="exam-default", poll_interval=1, monitor_status="starting")))
+            command_result(req, response)
+        mode['forbidden_processes'] = ['discord.exe']
+        command_result(req, response)
 
     def test_rtt_compatibility_and_invalid_combinations(self):
         self.assertEqual(rtt_fields(metric()), {})
