@@ -17,6 +17,7 @@ class ExamCommands:
         self.monitor = None
         self.last_exam_id = None
         self.next_scan = 0
+        self.foreground_enabled = False
 
     def start_session(self, initial_monitor=None):
         # Remote enable is connection-scoped. Never silently resume an exam
@@ -80,7 +81,8 @@ class ExamCommands:
                 return reject("INVALID_EXAM_SETTINGS")
             try:
                 monitor = ExamMonitor(self.pc_id, request.get("exam_id"), names,
-                                      request.get("poll_interval", 1))
+                                      request.get("poll_interval", 1),
+                                      foreground_enabled=self.foreground_enabled)
             except (ValueError, TypeError):
                 return reject("INVALID_EXAM_SETTINGS")
             # Validated completely before changing the running configuration.
