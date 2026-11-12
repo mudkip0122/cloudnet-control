@@ -7,10 +7,24 @@ import uuid
 import psutil
 
 
+# Chrome remains available for the exam. Explicit policies replace this preset.
+DEFAULT_FORBIDDEN_PROCESSES = (
+    "discord.exe", "discordcanary.exe", "discordptb.exe",
+    "kakaotalk.exe", "telegram.exe", "slack.exe", "ms-teams.exe", "teams.exe",
+    "whatsapp.exe", "line.exe", "skype.exe",
+    "anydesk.exe", "teamviewer.exe", "teamviewer_service.exe", "rustdesk.exe",
+    "mstsc.exe", "vncviewer.exe", "winvnc.exe",
+    "msedge.exe", "firefox.exe", "brave.exe", "opera.exe", "vivaldi.exe",
+    "chatgpt.exe", "claude.exe",
+)
+
+
 class ExamMonitor:
-    def __init__(self, pc_id, exam_id, forbidden_names, interval=1):
+    def __init__(self, pc_id, exam_id, forbidden_names=None, interval=1):
         if not isinstance(exam_id, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", exam_id):
             raise ValueError("--exam-id requires 1-64 letters, digits, _, . or -")
+        if forbidden_names is None:
+            forbidden_names = DEFAULT_FORBIDDEN_PROCESSES
         names = set()
         for name in forbidden_names:
             if (not isinstance(name, str) or not name or name != name.strip()

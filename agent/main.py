@@ -282,8 +282,8 @@ def main():
     parser.add_argument("--allow-remote-exam-control", action="store_true",
                         help="Allow authenticated GUI exam on/off and status commands; starts off unless --exam-mode")
     parser.add_argument("--exam-id", help="Exam session identifier (1-64 ASCII letters/digits/_.-)")
-    parser.add_argument("--forbid-process", action="append", default=[], metavar="NAME.exe",
-                        help="Exact forbidden executable name; repeat for multiple names")
+    parser.add_argument("--forbid-process", action="append", default=None, metavar="NAME.exe",
+                        help="Replace default exam detection list with exact executable names; repeat for multiple names")
     parser.add_argument("--exam-poll-interval", type=float, default=1,
                         help="Exam scan interval in seconds (0.5-60; default 1)")
     parser.add_argument("--protect-process", action="append", default=[], metavar="NAME.exe",
