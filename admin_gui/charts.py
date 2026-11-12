@@ -86,11 +86,11 @@ class LiveCharts(ttk.LabelFrame):
         self.axes[0].set_ylim(0, 100)
         self.axes[1].xaxis.set_major_formatter(DateFormatter("%H:%M:%S", tz=timezone.utc))
         self.axes[1].set_xlabel("Measurement time (UTC)")
+        self.notice = ttk.Label(self, text="표시 PC ID: 선택 대기", font=("Segoe UI", 11, "bold"))
+        self.notice.pack(side="top", fill="x", padx=8, pady=(4, 2))
         self.plot = FigureCanvasTkAgg(self.figure, master=self)
         self.canvas = self.plot.get_tk_widget()
         self.canvas.pack(fill="both", expand=True)
-        self.notice = ttk.Label(self, text="측정 데이터 대기")
-        self.notice.pack(fill="x", padx=8)
         self.points, self.state, self.pc_id = (), "PC를 선택하세요", None
         self.signature = None
         self.last_draw = float("-inf")
@@ -105,7 +105,7 @@ class LiveCharts(ttk.LabelFrame):
             return
         immediate = pc_id != self.pc_id or state != self.state
         self.pc_id, self.state, self.signature = pc_id, state, signature
-        self.notice.configure(text=(f"{pc_id or '선택 PC'} · {state}" +
+        self.notice.configure(text=(f"표시 PC ID: {pc_id or '선택 대기'} · {state}" +
             (" · 이전 측정 기록" if self.points and state != "온라인" else "")))
         elapsed = time.monotonic() - self.last_draw
         if immediate or elapsed >= 1:
