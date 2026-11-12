@@ -69,6 +69,7 @@ def register(conn, args):
         response.get("heartbeat_interval", getattr(args, "heartbeat_interval", 0)))
     args.session_rtt_enabled = (response.get("rtt_v1") is True
                                 and getattr(args, "rtt_interval", 5) != 0)
+    args.session_foreground_enabled = response.get("exam_foreground_v1") is True
     if (getattr(args, "exam_mode", False) or getattr(args, "allow_remote_exam_control", False)) and response.get("exam_events_v1") is not True:
         LOG.error("Exam mode requires server exam_events_v1 support; exam monitoring has not started")
         raise RegistrationError("Exam mode requires server exam_events_v1 support")
@@ -86,7 +87,9 @@ def stream(conn, args):
     rtt = (RttTracker(args.pc_id, getattr(args, "rtt_interval", 5), getattr(args, "rtt_timeout", 3))
            if getattr(args, "session_rtt_enabled", False) else None)
     exam_commands = getattr(args, "exam_commands", None) or ExamCommands(args.pc_id)
-    initial_monitor = (ExamMonitor(args.pc_id, args.exam_id, args.forbid_process, args.exam_poll_interval)
+    exam_commands.foreground_enabled = getattr(args, "session_foreground_enabled", False)
+    initial_monitor = (ExamMonitor(args.pc_id, args.exam_id, args.forbid_process, args.exam_poll_interval,
+                                  foreground_enabled=exam_commands.foreground_enabled)
                        if getattr(args, "exam_mode", False) else None)
     exam_commands.start_session(initial_monitor)
 
@@ -185,6 +188,8 @@ def stream(conn, args):
     if getattr(args, "exam_mode", False) or exam_commands.enabled:
         LOG.info("Exam monitor ready; startup mode=%s remote control=%s",
                  bool(initial_monitor), exam_commands.enabled)
+        LOG.info("Foreground exam detection supported by server: %s",
+                 exam_commands.foreground_enabled)
         exam_worker = threading.Thread(target=watch_exam, name="agent-exam", daemon=True)
         exam_worker.start()
     if rtt is not None:
