@@ -10,6 +10,14 @@ C GUI 안내를 ‘일반 앱은 표시된 창 기준(최소화·트레이 제�
 
 B 67904cf 반영 후 전체 테스트 224개 통과. 새 C 회귀 검증에서 같은 PID·생성 시각/다른 event_id는 두 이력으로 보존하고 동일 event_id는 한 번만 표시함을 확인했습니다. 실제 최소화/트레이/복원 결과는 아닙니다.
 
+### PC-03 최신 Agent 재실행 확인
+
+추가 사용자 요청에 따라 A 통합 2801d6c를 C 브랜치에 반영했습니다. B 67904cf의 agent/exam.py·agent/window_inventory.py와 로컬 파일이 같음을 확인한 뒤, 2026-11-12 18:07 KST 기존 운영 PC-03 Agent만 종료했습니다. 로컬 검증용 다른 Agent와 운영 서버는 변경하지 않았습니다.
+
+이번에는 옵션만 같은 별도 명령이 아니라 **Start PC-03 Process Control.cmd 파일 자체**를 실행했습니다. 기존 PC-03 ID·CA·토큰을 유지했고 새 인증정보를 만들지 않았습니다. 18:07:48 운영 등록 성공, Heartbeat 5초·원격 시험 제어 허용·서버 전경 지원 true·RTT 시작 및 측정 전송을 로그에서 확인했습니다. 18:08:16 TLS 관리자 읽기 점검에서도 PC-03 online=true, metrics_stale=false, exam_mode.enabled=false를 확인했습니다. 시험을 자동으로 다시 켜지 않았습니다.
+
+A 전달: PC-03은 B 67904cf 전체 소스(window_inventory.py 포함)와 최신 CMD로 재실행·운영 접속 확인을 마쳤습니다. 시험은 꺼짐입니다. 이후 승인된 공동 점검에서 GUI로 새 시험을 켜 실제 최소화·트레이·복원을 확인하면 됩니다. 로컬 증거는 runtime/pc03-cmd.stdout.log·pc03-cmd.stderr.log·pc03-window-policy-restart.json입니다.
+
 아래는 B b6f76c0 전경 이벤트 구현·검증 기록입니다.
 
 기준: B `b6f76c0` 및 [B 인계 문서](b-foreground-handoff.md). A 신규 전경 지원은 `18139f1`, C를 포함한 공동 검증은 `fdb7bb2`이며 최신 C 브랜치에도 병합했습니다.
