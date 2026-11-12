@@ -18,12 +18,15 @@ def exam_request(pc_id, action, exam_id="", names="", interval="1"):
     request.update(enabled=action == "on", exam_id=exam_id)
     if action == "on":
         entries = list(dict.fromkeys(name.strip().casefold() for name in names.split(",") if name.strip()))
-        if not 1 <= len(entries) <= 100 or any(len(name) > 128 or any(c in name for c in '/\\*?') for name in entries):
+        if names.strip() and (not 1 <= len(entries) <= 100 or any(
+                len(name) > 128 or any(c in name for c in '/\\*?') for name in entries)):
             raise ValueError("금지 실행 파일 이름 1~100개를 쉼표로 구분하세요. 경로·와일드카드는 허용하지 않습니다.")
         value = float(interval)
         if not math.isfinite(value) or not .5 <= value <= 60:
             raise ValueError("검사 간격은 0.5~60초입니다.")
-        request.update(forbidden_processes=entries, poll_interval=value)
+        request['poll_interval'] = value
+        if entries:
+            request['forbidden_processes'] = entries
     return request
 
 
@@ -54,7 +57,7 @@ class ExamWindow:
         ttk.Label(self.window, textvariable=dashboard.exam_warning, foreground="#b91c1c", wraplength=1000).pack(padx=12, pady=4)
         ttk.Label(self.window, textvariable=dashboard.foreground_warning, wraplength=1000).pack(padx=12, pady=4)
         self.inputs = []
-        for title, default in (("시험 ID", ""), ("금지 실행 파일 (쉼표 구분)", ""), ("검사 간격 (초)", "1")):
+        for title, default in (("시험 ID", ""), ("금지 실행 파일 (쉼표 구분 · 비우면 기본 목록, 입력하면 대체)", ""), ("검사 간격 (초)", "1")):
             ttk.Label(self.window, text=title).pack(anchor="w", padx=12)
             value = tk.StringVar(value=default)
             ttk.Entry(self.window, textvariable=value, width=65).pack(padx=12, pady=4)

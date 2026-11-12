@@ -39,9 +39,15 @@ class ContractTests(unittest.TestCase):
 
     def test_exam_invalid_settings(self):
         for exam_id, names, interval in [('bad id', 'a.exe', '1'), ('ok', '*.exe', '1'),
-                                         ('ok', '', '1'), ('ok', 'a.exe', 'nan'), ('ok', 'a.exe', '61')]:
+                                         ('ok', ',,', '1'), ('ok', '', 'nan'), ('ok', 'a.exe', 'nan'), ('ok', 'a.exe', '61')]:
             with self.assertRaises(ValueError):
                 exam_request('PC-03', 'on', exam_id, names, interval)
+
+    def test_empty_exam_policy_omits_field_for_agent_default(self):
+        for names in ('', '  \t '):
+            request = exam_request('PC-03', 'on', 'exam-1', names, '1')
+            self.assertNotIn('forbidden_processes', request)
+            self.assertEqual(request['poll_interval'], 1)
 
     def test_rtt_freshness_uses_own_timestamp(self):
         now = datetime.now(timezone.utc)
