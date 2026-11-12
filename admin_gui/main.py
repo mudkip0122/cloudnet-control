@@ -273,11 +273,16 @@ class Dashboard:
                     self.exam_store.snapshot(message['devices'])
                 elif kind == 'STATUS_UPDATE':
                     self.exam_store.status_update(message['device'])
+        self.update_exam_warnings()
+
+    def update_exam_warnings(self):
         event = self.exam_store.latest_warning
         if event is not None:
             process = event['process']
             self.exam_warning.set(f"금지 프로그램 실행 감지 이력 · PC {event['pc_id']} · 시험 {event['exam_id']} · "
                 f"{process['name']} (PID {process['pid']}) · {event['timestamp']} · 현재 실행 여부 미확인")
+        else:
+            self.exam_warning.set('표시할 금지 프로그램 감지 이력 없음 · 감시 정상/시험 준수를 뜻하지 않음')
         event = self.exam_store.latest_foreground
         if event is not None:
             label = 'Chrome 이탈' if event['transition'] == 'left' else 'Chrome 복귀'
@@ -285,6 +290,9 @@ class Dashboard:
             self.foreground_warning.set(f"{label} 감지 이력 · PC {event['pc_id']} · 시험 {event['exam_id']} · "
                 f"{event['previous_process']['name']} → {process['name']} (PID {process['pid']}) · {event['timestamp']}")
             self.foreground_notice.configure(foreground='#b91c1c' if event['transition'] == 'left' else '#047857')
+        else:
+            self.foreground_warning.set('표시할 Chrome 이탈·복귀 이력 없음 · 활성 창 감시 상태는 선택 PC 상세에서 확인')
+            self.foreground_notice.configure(foreground='#64748b')
 
     def show_detail(self, event=None):
         selection = self.table.selection()

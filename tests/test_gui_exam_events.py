@@ -22,6 +22,22 @@ def mode(enabled=True):
 
 
 class ExamStoreTests(unittest.TestCase):
+    def test_local_history_removal_preserves_state_and_dedup(self):
+        store = ExamStore()
+        store.snapshot([dict(pc_id='PC-01', online=True, exam_mode=mode())])
+        first, second = detection('first'), detection('second', pc_id='PC-02')
+        store.accept(first)
+        store.accept(second)
+        self.assertEqual(store.remove_history(['second']), 1)
+        self.assertEqual(store.latest_warning['event_id'], 'first')
+        self.assertFalse(store.accept(second))
+        self.assertEqual(store.remove_history(['first']), 1)
+        self.assertIsNone(store.latest_warning)
+        self.assertTrue(store.devices['PC-01']['exam_mode']['enabled'])
+        self.assertFalse(store.accept(first))
+        self.assertTrue(store.accept(detection('restored')))
+        self.assertEqual([e['event_id'] for e in store.history], ['restored'])
+
     def test_dedup_history_is_bounded_and_retained_through_disconnect(self):
         store = ExamStore(limit=3, dedup_limit=4)
         for index in range(6):

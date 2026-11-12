@@ -171,6 +171,21 @@ class ExamStore:
                 self.monitor[event['pc_id']] = event
         return True
 
+    def remove_history(self, event_ids):
+        """Remove local display records, retaining dedup and current monitoring state."""
+        ids = set(event_ids)
+        remaining = [event for event in self.history if event['event_id'] not in ids]
+        removed = len(self.history) - len(remaining)
+        if not removed:
+            return 0
+        self.history = deque(remaining, maxlen=self.history.maxlen)
+        self.latest_warning = next((event for event in reversed(self.history)
+            if event['kind'] == 'FORBIDDEN_PROCESS_DETECTED'), None)
+        self.latest_foreground = next((event for event in reversed(self.history)
+            if event['kind'] == 'EXAM_WINDOW_CHANGED'), None)
+        self.revision += 1
+        return removed
+
     def foreground_state(self, pc_id, connected):
         device = self.devices.get(pc_id, {})
         mode = exam_mode(device.get('exam_mode'))

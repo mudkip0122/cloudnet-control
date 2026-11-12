@@ -76,7 +76,16 @@ class ExamWindow:
             "미분류 사용자 지정 앱은 모든 실행 인스턴스 감지 · Chrome 이탈·복귀 감지 유지\n"
             "탭/URL 감시·자동 차단 없음 · 공백 전후 이탈 시간 계산 안 함"),
             wraplength=1000, justify="center").pack(padx=12, pady=8)
-        ttk.Label(self.window, text="전체 PC 감지·감시 상태 이력 · 최근 500개 · 과거 감지는 현재 실행 여부나 부정행위 확정이 아님").pack(padx=12)
+        ttk.Label(self.window, text="전체 PC 감지·감시 상태 이력 · 최신 수신순 / 최근 500개 · 과거 감지는 현재 실행 여부나 부정행위 확정이 아님").pack(padx=12)
+        history_actions = ttk.Frame(self.window)
+        history_actions.pack(fill='x', padx=12, pady=(4, 0))
+        self.delete_selected_button = ttk.Button(history_actions, text='선택 내역 지우기',
+                                                 command=self.delete_selected_history, state='disabled')
+        self.delete_selected_button.pack(side='left')
+        self.delete_all_button = ttk.Button(history_actions, text='전체 내역 지우기',
+                                            command=self.delete_all_history, state='disabled')
+        self.delete_all_button.pack(side='left', padx=8)
+        ttk.Label(history_actions, text='이 GUI의 내역만 지움 · 서버 저장 기록 유지').pack(side='left', padx=8)
         container = ttk.Frame(self.window)
         container.pack(fill="both", expand=True, padx=12, pady=8)
         columns = ('pc', 'exam', 'kind', 'name', 'pid', 'time')
@@ -90,6 +99,7 @@ class ExamWindow:
         self.history_table.configure(yscrollcommand=scroll.set)
         scroll.pack(side='right', fill='y')
         self.history_table.pack(fill='both', expand=True)
+        self.history_table.bind('<<TreeviewSelect>>', lambda event: self.update_history_buttons())
         self.window.protocol("WM_DELETE_WINDOW", self.close)
         self.timer = self.window.after(100, self.tick)
 
@@ -125,12 +135,40 @@ class ExamWindow:
         if self.history_revision == store.revision:
             return
         self.history_revision = store.revision
+        selected = self.history_table.selection()
+        position = self.history_table.yview()[0]
         for item in self.history_table.get_children():
             self.history_table.delete(item)
-        for event in store.history:
+        for event in reversed(store.history):
             kind, name, pid = event_columns(event)
-            self.history_table.insert('', 'end', values=(event['pc_id'], event['exam_id'], kind,
+            self.history_table.insert('', 'end', iid=event['event_id'], values=(event['pc_id'], event['exam_id'], kind,
                 name, pid, event['timestamp']))
+        for event_id in selected:
+            if self.history_table.exists(event_id):
+                self.history_table.selection_add(event_id)
+        self.history_table.yview_moveto(position)
+        self.update_history_buttons()
+
+    def update_history_buttons(self):
+        self.delete_selected_button.configure(state='normal' if self.history_table.selection() else 'disabled')
+        self.delete_all_button.configure(state='normal' if self.dashboard.exam_store.history else 'disabled')
+
+    def delete_history(self, event_ids):
+        self.dashboard.exam_store.remove_history(event_ids)
+        self.dashboard.update_exam_warnings()
+        self.refresh_history()
+
+    def delete_selected_history(self):
+        self.delete_history(self.history_table.selection())
+
+    def delete_all_history(self):
+        # Freeze the displayed IDs: events arriving during confirmation remain visible.
+        event_ids = self.history_table.get_children()
+        if event_ids and messagebox.askokcancel('전체 내역 지우기',
+                f'현재 표시된 전체 PC 내역 {len(event_ids)}개를 이 GUI에서 지울까요?\n'
+                '서버 저장 기록과 현재 시험·감시 상태는 유지됩니다.\n'
+                '확인 중 새로 수신된 내역은 남습니다.', parent=self.window):
+            self.delete_history(event_ids)
 
     def submit(self, action):
         if not self.target or self.pending is not None:

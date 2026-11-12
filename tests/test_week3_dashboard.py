@@ -136,3 +136,51 @@ class WeekThreeTests(unittest.TestCase):
         window.refresh_history()
         self.assertIn('Chrome 복귀', d.foreground_warning.get())
         self.assertEqual(len(window.history_table.get_children()), 4)
+
+    def test_newest_history_first_and_delete_selected_stable_event_identity(self):
+        d = self.dashboard
+        d.context, d.token = object(), 'synthetic'
+        d.exam_store.accept(detection('old'))
+        d.exam_store.accept(detection('new'))
+        with patch('admin_gui.exam_window.ProcessClient') as client:
+            client.return_value.worker.is_alive.return_value = False
+            d.open_exam()
+        window = d.exam_window
+        self.assertEqual(window.history_table.get_children(), ('new', 'old'))
+        window.history_table.selection_set('old')
+        d.exam_store.accept(detection('latest'))
+        window.refresh_history()
+        self.assertEqual(window.history_table.get_children(), ('latest', 'new', 'old'))
+        self.assertEqual(window.history_table.selection(), ('old',))
+        window.delete_selected_history()
+        self.assertEqual(window.history_table.get_children(), ('latest', 'new'))
+        self.assertFalse(d.exam_store.accept(detection('old')))
+
+    def test_clear_history_cancel_new_arrival_and_banner_reset(self):
+        d = self.dashboard
+        d.context, d.token = object(), 'synthetic'
+        d.exam_store.accept(detection('before'))
+        d.exam_store.accept(transition('transition'))
+        d.update_exam_warnings()
+        with patch('admin_gui.exam_window.ProcessClient') as client:
+            client.return_value.worker.is_alive.return_value = False
+            d.open_exam()
+        window = d.exam_window
+        with patch('admin_gui.exam_window.messagebox.askokcancel', return_value=False):
+            window.delete_all_history()
+        self.assertEqual(len(d.exam_store.history), 2)
+        def arrive(*args, **kwargs):
+            d.exam_store.accept(detection('during-confirmation'))
+            window.refresh_history()
+            return True
+        with patch('admin_gui.exam_window.messagebox.askokcancel', side_effect=arrive):
+            window.delete_all_history()
+        self.assertEqual(window.history_table.get_children(), ('during-confirmation',))
+        self.assertIsNone(d.exam_store.latest_foreground)
+        with patch('admin_gui.exam_window.messagebox.askokcancel', return_value=True):
+            window.delete_all_history()
+        self.assertEqual(window.history_table.get_children(), ())
+        self.assertTrue(window.delete_all_button.instate(['disabled']))
+        self.assertIsNone(d.exam_store.latest_warning)
+        self.assertIn('표시할 금지 프로그램 감지 이력 없음', d.exam_warning.get())
+        self.assertIn('표시할 Chrome 이탈·복귀 이력 없음', d.foreground_warning.get())
