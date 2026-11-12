@@ -15,6 +15,7 @@ from admin_gui.presentation import device_view
 from admin_gui.charts import LiveCharts, MetricHistory
 from admin_gui.process_window import ProcessWindow
 from admin_gui.exam_window import ExamWindow
+from admin_gui.exam_events import ExamEventClient, ExamStore
 
 
 class Dashboard:
@@ -37,6 +38,11 @@ class Dashboard:
         self.snapshot_received = None
         self.process_window = None
         self.exam_window = None
+        self.exam_store = ExamStore()
+        self.exam_client = None
+        self.exam_generation = 0
+        self.exam_stream_connected = False
+        self.exam_gap = False
         root.title("CloudNet Control — " + ("SAMPLE DATA / OFFLINE" if sample else "PC 모니터링"))
         root.geometry("1100x940")
         root.minsize(950, 900)
@@ -47,8 +53,12 @@ class Dashboard:
         self.update_connection_details()
         self.event_status = tk.StringVar(value="초기 전체 목록 대기")
         ctk.CTkLabel(root, textvariable=self.event_status).pack()
+        self.exam_stream = tk.StringVar(value="시험 이벤트: TLS 관리자 연결 필요" if not sample else "샘플 · 시험 이벤트 연결 없음")
+        ttk.Label(root, textvariable=self.exam_stream).pack()
+        self.exam_warning = tk.StringVar(value="금지 프로그램 감지 이력 없음 · 감시 정상/시험 준수를 뜻하지 않음")
+        ttk.Label(root, textvariable=self.exam_warning, foreground="#b91c1c", wraplength=1050).pack(padx=15)
         columns = ("name", "state", "cpu", "ram", "up", "down", "rtt", "time")
-        self.table = ttk.Treeview(root, columns=columns, show="headings", height=8)
+        self.table = ttk.Treeview(root, columns=columns, show="headings", height=5)
         for col, title in zip(columns, ("PC 이름 / ID", "상태", "CPU %", "RAM %", "업로드 Mbps", "다운로드 Mbps", "서버 RTT(ms)", "측정 시각 UTC")):
             self.table.heading(col, text=title)
             self.table.column(col, width=120, anchor="center")
@@ -62,7 +72,7 @@ class Dashboard:
         for index, (key, label) in enumerate((
                 ("name", "PC 이름 / ID"), ("state", "상태"),
                 ("up", "업로드 Mbps"), ("down", "다운로드 Mbps"),
-                ("time", "측정 시각 UTC"), ("received", "서버 최근 수신 UTC"),
+                ("time", "측정 시각 UTC"), ("received", "서버 측정 수신 UTC"),
                 ("age", "측정 후 경과"), ("gui_received", "GUI 목록 수신 UTC"),
                 ("snapshot_age", "목록 수신 후 경과"), ("rtt", "서버 RTT(ms)"))):
             value = tk.StringVar(value="—")
@@ -106,6 +116,8 @@ class Dashboard:
                   "실제 측정값 · Agent 2초 수집 / 화면 1초 조회 · 결측값 —")).pack(pady=15)
         root.protocol("WM_DELETE_WINDOW", self.close)
         self.worker = threading.Thread(target=(lambda: None) if sample else self.receive, daemon=True)
+        if not sample and context is not None and token:
+            self.exam_client = ExamEventClient(host, port, context, token, server_name)
         self.worker.start()
         self.timer = root.after(100, self.tick)
 
@@ -182,6 +194,7 @@ class Dashboard:
             self.connected = connected
             if not connected:
                 self.history.disconnect()
+                self.exam_store.invalidate()
                 self.connection_state = "error"
                 self.status.set(data)
                 if self.context:
@@ -203,8 +216,10 @@ class Dashboard:
                                       if self.sample else " · ".join(changes) if changes else "전체 목록 동기화 완료")
                 self.devices = {device["pc_id"]: device for device in data}
                 self.history.update(self.devices)
+                self.exam_store.snapshot(data)
         except queue.Empty:
             pass
+        self.drain_exam_events()
         self.update_connection_details()
         # Re-evaluate freshness even while no new server response arrives.
         for pc_id in self.table.get_children():
@@ -221,6 +236,37 @@ class Dashboard:
             self.table.selection_set(next(iter(self.devices)))
         self.show_detail()
         self.timer = self.root.after(100, self.tick)
+
+    def drain_exam_events(self):
+        if self.exam_client is None:
+            return
+        try:
+            generation, connected, label = self.exam_client.connection.get_nowait()
+            if generation > 1 or self.exam_generation and not connected:
+                self.exam_gap = True
+            self.exam_generation, self.exam_stream_connected = generation, connected
+            self.exam_stream.set("시험 이벤트: " + label + (" · 이전 수신 공백 가능" if self.exam_gap else ""))
+        except queue.Empty:
+            pass
+        # Limit work per Tk tick while retaining every queued event until processed.
+        for _ in range(200):
+            try:
+                generation, message = self.exam_client.events.get_nowait()
+            except queue.Empty:
+                break
+            kind = message.get('type')
+            if kind == 'EXAM_EVENT':
+                self.exam_store.accept(message)
+            elif generation == self.exam_generation and self.exam_stream_connected and self.connected:
+                if kind == 'DEVICE_LIST':
+                    self.exam_store.snapshot(message['devices'])
+                elif kind == 'STATUS_UPDATE':
+                    self.exam_store.status_update(message['device'])
+        event = self.exam_store.latest_warning
+        if event is not None:
+            process = event['process']
+            self.exam_warning.set(f"금지 프로그램 실행 감지 이력 · PC {event['pc_id']} · 시험 {event['exam_id']} · "
+                f"{process['name']} (PID {process['pid']}) · {event['timestamp']} · 현재 실행 여부 미확인")
 
     def show_detail(self, event=None):
         selection = self.table.selection()
@@ -253,14 +299,15 @@ class Dashboard:
         self.process_button.configure(state="normal" if available else "disabled")
         for button in self.preview_buttons:
             button.configure(state="normal" if device and view.get("state") == "온라인" else "disabled")
-        self.exam_button.configure(state="normal" if available else "disabled")
+        can_view_exam = not self.sample and self.context is not None and bool(self.token) and bool(device or self.exam_store.history)
+        self.exam_button.configure(state="normal" if can_view_exam else "disabled")
         if self.process_window is not None and not self.process_window.closed:
             self.process_window.set_target(device, self.connected and view.get("state") == "온라인")
         if self.exam_window is not None and not self.exam_window.closed:
             self.exam_window.set_target(device, self.connected and view.get("state") == "온라인")
 
     def open_exam(self):
-        if self.sample or self.context is None or not self.token or not self.connected:
+        if self.sample or self.context is None or not self.token:
             return
         if self.exam_window is None or self.exam_window.closed:
             self.exam_window = ExamWindow(self)
@@ -298,6 +345,8 @@ class Dashboard:
             self.process_window.close()
         if self.exam_window is not None:
             self.exam_window.close()
+        if self.exam_client is not None:
+            self.exam_client.close()
         self.stop.set()
         if self.sock is not None:
             try:
@@ -312,6 +361,8 @@ class Dashboard:
         exam_client = self.exam_window.client if self.exam_window is not None else None
         if (self.worker.is_alive() or (process_client is not None and process_client.worker.is_alive())
                 or (exam_client is not None and exam_client.worker.is_alive())):
+            self.root.after(50, self.finish_close)
+        elif self.exam_client is not None and self.exam_client.worker.is_alive():
             self.root.after(50, self.finish_close)
         else:
             self.worker.join()

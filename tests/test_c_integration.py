@@ -45,7 +45,7 @@ class ContractTests(unittest.TestCase):
 
     def test_rtt_freshness_uses_own_timestamp(self):
         now = datetime.now(timezone.utc)
-        device = dict(pc_id='PC-03', pc_name='test', online=True, metrics=dict(
+        device = dict(pc_id='PC-03', pc_name='test', online=True, metrics_stale=False, metrics=dict(
             timestamp=now.isoformat(), rtt_timestamp=now.isoformat(), rtt_ms=24.185, rtt_status='ok'))
         self.assertEqual(device_view(device, now=now)['rtt'], '24.2 ms')
         device['metrics']['rtt_timestamp'] = (now - timedelta(seconds=9)).isoformat()

@@ -6,6 +6,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 from admin_gui.process_control import ProcessClient, command_request
+from admin_gui.exam_events import MONITOR_LABELS, exam_mode
 
 
 def exam_request(pc_id, action, exam_id="", names="", interval="1"):
@@ -36,9 +37,18 @@ class ExamWindow:
                                     dashboard.token, server_name=dashboard.server_name)
         self.window = tk.Toplevel(dashboard.root)
         self.window.title("시험 모드")
+        self.window.geometry("1040x720")
+        self.window.minsize(850, 650)
+        self.history_revision = -1
+        self.display_pc_id = None
+        self.last_mode_known = False
         self.target_text = tk.StringVar()
         self.status = tk.StringVar(value="상태 미확인")
         ttk.Label(self.window, textvariable=self.target_text).pack(padx=12, pady=8)
+        self.monitor_text = tk.StringVar(value="시험 상태 미확인")
+        ttk.Label(self.window, textvariable=self.monitor_text).pack(padx=12, pady=4)
+        ttk.Label(self.window, textvariable=dashboard.exam_stream, wraplength=1000).pack(padx=12)
+        ttk.Label(self.window, textvariable=dashboard.exam_warning, foreground="#b91c1c", wraplength=1000).pack(padx=12, pady=4)
         self.inputs = []
         for title, default in (("시험 ID", ""), ("금지 실행 파일 (쉼표 구분)", ""), ("검사 간격 (초)", "1")):
             ttk.Label(self.window, text=title).pack(anchor="w", padx=12)
@@ -52,28 +62,68 @@ class ExamWindow:
             self.buttons.append(button)
         ttk.Label(self.window, textvariable=self.status, wraplength=520).pack(padx=12, pady=10)
         ttk.Label(self.window, text="이름 기반 감지 · 브라우저 탭/URL 감시 및 실행 차단 기능 없음").pack(padx=12, pady=8)
+        ttk.Label(self.window, text="전체 PC 감지·감시 상태 이력 · 최근 500개 · 과거 감지는 현재 실행 여부나 부정행위 확정이 아님").pack(padx=12)
+        container = ttk.Frame(self.window)
+        container.pack(fill="both", expand=True, padx=12, pady=8)
+        columns = ('pc', 'exam', 'kind', 'name', 'pid', 'time')
+        self.history_table = ttk.Treeview(container, columns=columns, show='headings', height=7)
+        for column, title, width in zip(columns,
+                ('PC ID', '시험 ID', '종류 / 감시 상태', '프로그램 / 조회 불가 수', 'PID', '이벤트 시각'),
+                (85, 130, 160, 190, 70, 260)):
+            self.history_table.heading(column, text=title)
+            self.history_table.column(column, width=width)
+        scroll = ttk.Scrollbar(container, orient='vertical', command=self.history_table.yview)
+        self.history_table.configure(yscrollcommand=scroll.set)
+        scroll.pack(side='right', fill='y')
+        self.history_table.pack(fill='both', expand=True)
         self.window.protocol("WM_DELETE_WINDOW", self.close)
         self.timer = self.window.after(100, self.tick)
 
     def set_target(self, device, connected):
+        self.display_pc_id = device.get('pc_id') if device else None
         target = device["pc_id"] if connected and device and device.get("online") else None
+        known = exam_mode(self.dashboard.exam_store.devices.get(self.display_pc_id, {}).get('exam_mode')) is not None
         if target != self.target:
             self.target = target
             self.generation += 1
             self.status.set("상태 미확인 · 상태를 새로고침하세요" if target else "연결 끊김 · 상태 미확인")
             self.needs_status = bool(target)
+        elif target and self.last_mode_known and not known:
+            self.needs_status = True
+        self.last_mode_known = known
         if self.needs_status and target and self.pending is None:
             self.needs_status = False
             self.submit("status")
         self.target_text.set(target or "온라인 PC를 선택하세요")
         for button in self.buttons:
             button.configure(state="normal" if target and self.pending is None else "disabled")
+        self.refresh_history()
+
+    def refresh_history(self):
+        store = self.dashboard.exam_store
+        self.monitor_text.set("현재 시험 상태: " + store.state(self.display_pc_id, self.dashboard.connected))
+        if self.history_revision == store.revision:
+            return
+        self.history_revision = store.revision
+        for item in self.history_table.get_children():
+            self.history_table.delete(item)
+        for event in store.history:
+            process = event.get('process', {})
+            detected = event['kind'] == 'FORBIDDEN_PROCESS_DETECTED'
+            kind = '금지 프로그램 감지' if detected else MONITOR_LABELS.get(event.get('status'), '상태 미확인')
+            self.history_table.insert('', 'end', values=(event['pc_id'], event['exam_id'], kind,
+                process.get('name') if detected else f"조회 불가 {event.get('unreadable_count')}개",
+                process.get('pid', '—'), event['timestamp']))
 
     def submit(self, action):
         if not self.target or self.pending is not None:
             return
         try:
-            request = exam_request(self.target, action, *(value.get() for value in self.inputs))
+            values = [value.get() for value in self.inputs]
+            current = exam_mode(self.dashboard.exam_store.devices.get(self.target, {}).get('exam_mode'))
+            if action == 'off' and current and current.get('exam_id'):
+                values[0] = current['exam_id']
+            request = exam_request(self.target, action, *values)
         except ValueError as exc:
             messagebox.showinfo("시험 설정 확인", str(exc), parent=self.window)
             return
@@ -92,19 +142,20 @@ class ExamWindow:
                 generation = self.pending[1]
                 self.pending = None
                 if generation == self.generation and request["target_id"] == self.target:
-                    mode = result.get("exam_mode")
-                    if (result.get("ok") is True and result.get("code") in (
-                            "EXAM_STATUS", "EXAM_MODE_ENABLED", "EXAM_MODE_DISABLED")
-                            and isinstance(mode, dict) and type(mode.get("enabled")) is bool
-                            and mode.get("monitor_status") in ("starting", "ok", "partial", "unavailable", "off")):
-                        status = {"starting": "검사 시작 중", "ok": "정상 검사", "partial": "일부 확인 불가",
-                                  "unavailable": "감시 불가", "off": "꺼짐"}.get(mode.get("monitor_status"), "상태 미확인")
-                        self.status.set(f"{mode.get('exam_id')} · {status}")
+                    mode = exam_mode(result.get("exam_mode"))
+                    expected = ('EXAM_STATUS' if request['action'] == 'GET_EXAM_STATUS' else
+                                'EXAM_MODE_ENABLED' if request['enabled'] else 'EXAM_MODE_DISABLED')
+                    matches = (mode is not None and (request['action'] == 'GET_EXAM_STATUS' or
+                        mode['enabled'] == request['enabled'] and mode['exam_id'] == request['exam_id']))
+                    if result.get("ok") is True and result.get('code') == expected and matches:
+                        status = MONITOR_LABELS[mode['monitor_status']]
+                        self.status.set(f"명령 응답: {mode.get('exam_id')} · {status} · 현재 상태는 서버 목록으로 동기화")
                         self.inputs[0].set(mode.get("exam_id") or "")
                     else:
                         self.status.set("결과 미확인 / 거절: " + str(result.get("code")) + " · 상태를 다시 조회하세요")
         except queue.Empty:
             pass
+        self.refresh_history()
         self.timer = self.window.after(100, self.tick)
 
     def close(self):
