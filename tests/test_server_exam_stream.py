@@ -2,6 +2,7 @@
 from datetime import datetime, timedelta, timezone
 from argparse import Namespace
 import socket
+import queue
 import ssl
 import threading
 import time
@@ -10,6 +11,8 @@ from unittest.mock import Mock, patch
 
 from agent.exam_commands import ExamCommands
 from agent.main import stream
+from admin_gui.exam_events import ExamEventClient, ExamStore
+from admin_gui.presentation import device_view
 from common.protocol import recv_message, send_message
 from server.audit import AuditStore
 from server.main import MonitoringServer
@@ -42,7 +45,7 @@ class ExamStreamTests(unittest.TestCase):
             self.assertFalse(thread.is_alive())
         self.audit.close()
 
-    def connect(self, role="admin", **fields):
+    def open_tls(self):
         raw_client, raw_server = socket.socketpair()
         def serve():
             with raw_server, self.server_context.wrap_socket(raw_server, server_side=True) as secured:
@@ -53,6 +56,10 @@ class ExamStreamTests(unittest.TestCase):
         client = self.client_context.wrap_socket(raw_client, server_hostname="127.0.0.1")
         client.settimeout(2)
         self.clients.append(client)
+        return client
+
+    def connect(self, role="admin", **fields):
+        client = self.open_tls()
         request = dict(type="REGISTER", role=role)
         if role == "agent":
             request.update(pc_id="PC-01", pc_name="test", token=self.auth["agents"]["PC-01"])
@@ -198,6 +205,71 @@ class ExamStreamTests(unittest.TestCase):
         for role, fields in (("agent", dict(subscribe_exam=True)), ("admin", dict(subscribe_exam="true"))):
             _, result = self.connect(role, **fields)
             self.assertEqual(result["type"], "ERROR")
+
+    def test_c_35004c3_client_receives_a_events_mode_rtt_and_reconnect(self):
+        agent, _ = self.connect("agent")
+        commander, _ = self.connect()
+        subscription = self.open_tls()
+        store = ExamStore()
+
+        def wait_until(condition):
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                try:
+                    _, message = client.events.get(timeout=.1)
+                except queue.Empty:
+                    continue
+                if message["type"] == "DEVICE_LIST":
+                    store.snapshot(message["devices"])
+                elif message["type"] == "STATUS_UPDATE":
+                    store.status_update(message["device"])
+                else:
+                    store.accept(message)
+                if condition():
+                    return
+            self.fail("Actual C client did not receive the expected A state/event")
+
+        # Only dialing is replaced: C's unchanged worker uses the real TLS A
+        # connection, registration, parsing, queues, keepalive and polling.
+        with patch("admin_gui.exam_events.connect", return_value=subscription):
+            client = ExamEventClient("localhost", 0, self.client_context, self.auth["admin_token"])
+            try:
+                wait_until(lambda: "PC-01" in store.devices)
+                old_session = store.devices["PC-01"]["agent_session_id"]
+                self.enable(agent, commander)
+                detection = self.event(kind="FORBIDDEN_PROCESS_DETECTED",
+                                       process=dict(pid=12345, name="demo.exe", create_time=1.25))
+                send_message(agent, detection)
+                send_message(agent, detection)
+                sample = dict(type="METRICS", pc_id="PC-01", timestamp=datetime.now(timezone.utc).isoformat(),
+                              cpu_percent=10, ram_percent=20, upload_mbps=0, download_mbps=0,
+                              rtt_ms=24.2, rtt_status="ok", rtt_timestamp=datetime.now(timezone.utc).isoformat())
+                send_message(agent, sample)
+                wait_until(lambda: store.latest_warning is not None
+                           and (store.devices["PC-01"].get("exam_mode") or {}).get("enabled") is True
+                           and (store.devices["PC-01"].get("metrics") or {}).get("rtt_status") == "ok")
+                self.assertEqual(len(store.history), 1)
+                self.assertEqual(device_view(store.devices["PC-01"])["rtt"], "24.2 ms")
+                request = dict(type="COMMAND", action="SET_EXAM_MODE", command_id="c-off", target_id="PC-01",
+                               expires_at=(datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat(),
+                               enabled=False, exam_id="exam-1")
+                send_message(commander, request)
+                recv_message(agent)
+                send_message(agent, self.handler.handle(request)[0])
+                self.assertEqual(recv_message(commander)["code"], "EXAM_MODE_DISABLED")
+                wait_until(lambda: (store.devices["PC-01"].get("exam_mode") or {}).get("enabled") is False)
+                self.assertIn("꺼짐", store.state("PC-01", True))
+                agent.shutdown(socket.SHUT_RDWR)
+                self.threads[0].join(timeout=2)
+                self.connect("agent")
+                wait_until(lambda: store.devices["PC-01"].get("agent_session_id") != old_session)
+                self.assertIsNone(store.devices["PC-01"]["exam_mode"])
+                self.assertIn("미확인", store.state("PC-01", True))
+                self.assertEqual(len(store.history), 1)
+            finally:
+                client.close()
+                client.worker.join(timeout=3)
+            self.assertFalse(client.worker.is_alive())
 
     def test_unchanged_b_stream_exam_detection_disable_and_rtt(self):
         agent, registered = self.connect("agent")
