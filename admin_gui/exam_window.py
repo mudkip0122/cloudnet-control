@@ -7,6 +7,7 @@ from tkinter import ttk, messagebox
 
 from admin_gui.process_control import ProcessClient, command_request
 from admin_gui.exam_events import MONITOR_LABELS, exam_mode, event_columns
+from admin_gui.presentation import device_view
 
 
 def exam_request(pc_id, action, exam_id="", names="", interval="1"):
@@ -40,12 +41,14 @@ class ExamWindow:
                                     dashboard.token, server_name=dashboard.server_name)
         self.window = tk.Toplevel(dashboard.root)
         self.window.title("시험 모드")
-        self.window.geometry("1040x720")
-        self.window.minsize(850, 650)
+        self.window.geometry("1040x840")
+        self.window.minsize(850, 740)
         self.history_revision = -1
         self.display_pc_id = None
         self.last_mode_known = False
         self.agent_session_id = None
+        self.pc_choice = tk.StringVar()
+        self.pc_controls = {}
         self.target_text = tk.StringVar()
         self.status = tk.StringVar(value="상태 미확인")
         ttk.Label(self.window, textvariable=self.target_text).pack(padx=12, pady=8)
@@ -64,11 +67,23 @@ class ExamWindow:
             self.inputs.append(value)
         self.buttons = []
         actions = ttk.Frame(self.window)
-        actions.pack(padx=12, pady=8)
-        for action, title in (("on", "켜기"), ("off", "끄기"), ("status", "상태 새로고침")):
-            button = ttk.Button(actions, text=title, command=lambda a=action: self.submit(a))
-            button.pack(side='left', padx=4)
-            self.buttons.append(button)
+        actions.pack(fill='x', padx=12, pady=8)
+        actions.columnconfigure(1, weight=1)
+        ttk.Label(actions, text='각 행의 PC만 제어 · 위 시험 ID/금지 목록/검사 간격 적용').grid(
+            row=0, column=0, columnspan=5, sticky='w', pady=(0, 4))
+        for row, pc_id in enumerate(('PC-01', 'PC-02', 'PC-03'), start=1):
+            ttk.Radiobutton(actions, text=pc_id, variable=self.pc_choice, value=pc_id,
+                            command=self.sync_devices).grid(row=row, column=0, sticky='w', padx=(0, 8))
+            state = tk.StringVar(value='상태 미확인')
+            ttk.Label(actions, textvariable=state).grid(row=row, column=1, sticky='w', padx=8)
+            controls = {'state': state}
+            for column, (action, title) in enumerate((('on', '켜기'), ('off', '끄기'), ('status', '조회')), start=2):
+                button = ttk.Button(actions, text=title, state='disabled',
+                                    command=lambda pc=pc_id, a=action: self.submit_for_pc(pc, a))
+                button.grid(row=row, column=column, padx=4, pady=2)
+                controls[action] = button
+                self.buttons.append(button)
+            self.pc_controls[pc_id] = controls
         ttk.Label(self.window, textvariable=self.status, wraplength=520).pack(padx=12, pady=10)
         ttk.Label(self.window, text=(
             "일반 앱은 표시된 창 기준(최소화·트레이 제외), 원격제어 앱은 백그라운드 포함\n"
@@ -103,7 +118,40 @@ class ExamWindow:
         self.window.protocol("WM_DELETE_WINDOW", self.close)
         self.timer = self.window.after(100, self.tick)
 
-    def set_target(self, device, connected):
+    def device_ready(self, pc_id):
+        device = self.dashboard.devices.get(pc_id)
+        return bool(device and self.dashboard.connected and self.dashboard.context is not None
+                    and self.dashboard.token and not self.dashboard.sample
+                    and device_view(device, True, now=self.dashboard.sample_now)['state'] == '온라인')
+
+    def sync_devices(self, preferred_id=None, force_selection=False, request_status=True):
+        # Monitor selection initializes this window; later monitor ticks must not
+        # override the PC explicitly chosen inside the exam window.
+        if force_selection and preferred_id in self.pc_controls:
+            self.pc_choice.set(preferred_id)
+        if self.pc_choice.get() not in self.pc_controls:
+            choices = [pc for pc in self.pc_controls if pc in self.dashboard.devices]
+            self.pc_choice.set(preferred_id if preferred_id in self.pc_controls else (choices[0] if choices else 'PC-01'))
+        pc_id = self.pc_choice.get()
+        device = self.dashboard.devices.get(pc_id, dict(pc_id=pc_id, pc_name=pc_id, online=False))
+        self.set_target(device, self.device_ready(pc_id), request_status=request_status)
+        self.update_pc_controls()
+
+    def update_pc_controls(self):
+        for pc_id, controls in self.pc_controls.items():
+            controls['state'].set(self.dashboard.exam_store.state(pc_id, self.dashboard.connected))
+            ready = self.device_ready(pc_id) and self.pending is None and not self.closed
+            for action in ('on', 'off', 'status'):
+                controls[action].configure(state='normal' if ready else 'disabled')
+
+    def submit_for_pc(self, pc_id, action):
+        if self.pending is not None or not self.device_ready(pc_id):
+            return
+        self.pc_choice.set(pc_id)
+        self.sync_devices(request_status=False)
+        self.submit(action)
+
+    def set_target(self, device, connected, request_status=True):
         self.display_pc_id = device.get('pc_id') if device else None
         target = device["pc_id"] if connected and device and device.get("online") else None
         session_id = device.get('agent_session_id') if device else None
@@ -120,12 +168,10 @@ class ExamWindow:
             self.needs_status = True
         self.agent_session_id = session_id
         self.last_mode_known = known
-        if self.needs_status and target and self.pending is None:
+        if request_status and self.needs_status and target and self.pending is None:
             self.needs_status = False
             self.submit("status")
-        self.target_text.set(target or "온라인 PC를 선택하세요")
-        for button in self.buttons:
-            button.configure(state="normal" if target and self.pending is None else "disabled")
+        self.target_text.set(f"선택 PC: {self.display_pc_id}" + ('' if target else ' · 오프라인/데이터 지연'))
         self.refresh_history()
 
     def refresh_history(self):
@@ -183,7 +229,8 @@ class ExamWindow:
             messagebox.showinfo("시험 설정 확인", str(exc), parent=self.window)
             return
         self.pending = request, self.generation
-        self.status.set("응답 대기 · 상태 미확인")
+        self.needs_status = False
+        self.status.set(f"{self.target} · 응답 대기 · 상태 미확인")
         self.client.submit(request)
         for button in self.buttons:
             button.configure(state="disabled")
@@ -204,12 +251,14 @@ class ExamWindow:
                         mode['enabled'] == request['enabled'] and mode['exam_id'] == request['exam_id']))
                     if result.get("ok") is True and result.get('code') == expected and matches:
                         status = MONITOR_LABELS[mode['monitor_status']]
-                        self.status.set(f"명령 응답: {mode.get('exam_id')} · {status} · 현재 상태는 서버 목록으로 동기화")
-                        self.inputs[0].set(mode.get("exam_id") or "")
+                        self.status.set(f"명령 응답: {request['target_id']} · {mode.get('exam_id')} · {status} · 현재 상태는 서버 목록으로 동기화")
+                        if not self.inputs[0].get().strip() and mode.get('exam_id'):
+                            self.inputs[0].set(mode['exam_id'])
                     else:
                         self.status.set("결과 미확인 / 거절: " + str(result.get("code")) + " · 상태를 다시 조회하세요")
         except queue.Empty:
             pass
+        self.sync_devices()
         self.refresh_history()
         self.timer = self.window.after(100, self.tick)
 

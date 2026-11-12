@@ -234,15 +234,17 @@ class Dashboard:
         for pc_id in self.table.get_children():
             if pc_id not in self.devices:
                 self.table.delete(pc_id)
-        for pc_id, device in self.devices.items():
+        for position, pc_id in enumerate(sorted(self.devices)):
+            device = self.devices[pc_id]
             view = device_view(device, self.connected, now=self.sample_now)
             values = tuple(view[key] for key in ("name", "state", "cpu", "ram", "up", "down", "rtt", "time"))
             if self.table.exists(pc_id):
                 self.table.item(pc_id, values=values)
             else:
                 self.table.insert("", "end", iid=pc_id, values=values)
+            self.table.move(pc_id, '', position)
         if not self.table.selection() and self.devices:
-            self.table.selection_set(next(iter(self.devices)))
+            self.table.selection_set(self.table.get_children()[0])
         self.show_detail()
         self.timer = self.root.after(100, self.tick)
 
@@ -332,13 +334,15 @@ class Dashboard:
         if self.process_window is not None and not self.process_window.closed:
             self.process_window.set_target(device, self.connected and view.get("state") == "온라인")
         if self.exam_window is not None and not self.exam_window.closed:
-            self.exam_window.set_target(device, self.connected and view.get("state") == "온라인")
+            self.exam_window.sync_devices(preferred_id=device['pc_id'] if device else None)
 
     def open_exam(self):
         if self.sample or self.context is None or not self.token:
             return
         if self.exam_window is None or self.exam_window.closed:
             self.exam_window = ExamWindow(self)
+        selection = self.table.selection()
+        self.exam_window.sync_devices(preferred_id=selection[0] if selection else None, force_selection=True)
         self.show_detail()
         self.exam_window.window.lift()
 

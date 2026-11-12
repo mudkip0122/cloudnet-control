@@ -52,6 +52,79 @@ class WeekThreeTests(unittest.TestCase):
             self.assertEqual(d.charts.pc_id, f'PC-0{i}')
         self.assertNotEqual(d.details['gui_received'].get(), '—')
 
+    def test_monitor_pc_order_is_fixed_across_arrivals_and_reconnects(self):
+        d = self.dashboard
+        self.refresh(True, [])
+        self.refresh(True, list(reversed(self.devices)))
+        self.assertEqual(d.table.get_children(), ('PC-01', 'PC-02', 'PC-03'))
+        self.assertEqual(d.table.selection(), ('PC-01',))
+        d.table.selection_set('PC-02')
+        self.refresh(True, self.devices[1:])
+        self.refresh(True, self.devices[1:] + self.devices[:1])
+        self.assertEqual(d.table.get_children(), ('PC-01', 'PC-02', 'PC-03'))
+        self.assertEqual(d.table.selection(), ('PC-02',))
+
+    def test_exam_pc_buttons_route_exact_target_and_ignore_stale_results(self):
+        d = self.dashboard
+        d.context, d.token = object(), 'synthetic'
+        with patch('admin_gui.exam_window.ProcessClient') as factory:
+            client = factory.return_value
+            client.worker.is_alive.return_value = False
+            client.results = queue.Queue()
+            d.open_exam()
+        window = d.exam_window
+
+        def deliver(request, result_mode, code='EXAM_STATUS'):
+            client.results.put((request, dict(ok=True, code=code, exam_mode=result_mode)))
+            window.window.after_cancel(window.timer)
+            window.tick()
+
+        initial = client.submit.call_args.args[0]
+        self.assertEqual(initial['target_id'], 'PC-01')
+        window.inputs[0].set('joint-trial')
+        deliver(initial, mode(False))
+        self.assertEqual(window.inputs[0].get(), 'joint-trial')
+        d.table.selection_set('PC-03')
+        d.show_detail()
+        self.assertEqual(window.pc_choice.get(), 'PC-01')
+        window.pc_controls['PC-02']['on'].invoke()
+        enable = client.submit.call_args.args[0]
+        self.assertEqual((enable['target_id'], enable['action'], enable['enabled']),
+                         ('PC-02', 'SET_EXAM_MODE', True))
+        self.assertNotIn('forbidden_processes', enable)
+        self.assertTrue(all(button.instate(['disabled']) for button in window.buttons))
+        window.pc_choice.set('PC-03')
+        window.sync_devices()
+        deliver(enable, dict(mode(), exam_id='joint-trial'), code='EXAM_MODE_ENABLED')
+        query = client.submit.call_args.args[0]
+        self.assertEqual((query['target_id'], query['action']), ('PC-03', 'GET_EXAM_STATUS'))
+        deliver(query, mode(False))
+        d.exam_store.status_update(dict(self.devices[2], exam_mode=dict(mode(), exam_id='pc03-current')))
+        window.pc_controls['PC-03']['off'].invoke()
+        disable = client.submit.call_args.args[0]
+        self.assertEqual((disable['target_id'], disable['enabled'], disable['exam_id']),
+                         ('PC-03', False, 'pc03-current'))
+        mutations = [call.args[0] for call in client.submit.call_args_list if call.args[0]['action'] == 'SET_EXAM_MODE']
+        self.assertEqual(len(mutations), 2)
+
+    def test_exam_offline_pc_controls_disabled(self):
+        d = self.dashboard
+        d.context, d.token = object(), 'synthetic'
+        self.devices[1]['online'] = False
+        self.refresh(True, self.devices)
+        with patch('admin_gui.exam_window.ProcessClient') as factory:
+            client = factory.return_value
+            client.worker.is_alive.return_value = False
+            d.open_exam()
+        window = d.exam_window
+        self.assertTrue(all(window.pc_controls['PC-02'][action].instate(['disabled'])
+                            for action in ('on', 'off', 'status')))
+        count = client.submit.call_count
+        window.submit_for_pc('PC-02', 'on')
+        self.assertEqual(client.submit.call_count, count)
+        self.refresh(False, 'synthetic disconnect')
+        self.assertTrue(all(button.instate(['disabled']) for button in window.buttons))
+
     def test_disconnect_hides_current_values_preserves_history_and_disables_controls(self):
         d = self.dashboard
         d.context, d.token = object(), 'synthetic'
