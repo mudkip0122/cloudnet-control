@@ -20,6 +20,20 @@ def request(**changes):
 
 
 class ExamCommandTests(unittest.TestCase):
+    def test_omitted_list_uses_defaults_but_empty_or_null_is_invalid(self):
+        commands = ExamCommands("pc", enabled=True)
+        message = request()
+        del message["forbidden_processes"]
+        response = commands.handle(message)[0]
+        self.assertTrue(response["ok"])
+        self.assertIn("discord.exe", response["exam_mode"]["forbidden_processes"])
+        self.assertNotIn("chrome.exe", response["exam_mode"]["forbidden_processes"])
+        original = commands.monitor
+        for names in ([], None):
+            self.assertEqual(commands.handle(request(forbidden_processes=names))[0]["code"],
+                             "INVALID_EXAM_SETTINGS")
+            self.assertIs(commands.monitor, original)
+
     def test_disabled_and_invalid_requests_do_not_change_mode(self):
         commands = ExamCommands("pc")
         self.assertEqual(commands.handle(request())[0]["code"], "EXAM_CONTROL_DISABLED")
