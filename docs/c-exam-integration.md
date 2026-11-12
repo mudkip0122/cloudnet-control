@@ -2,6 +2,8 @@
 
 기준: B `3a091ef`, 통합 브랜치 `integration/c-exam-batch-control`.
 
+최신 전경 통합: A 18139f1의 새 전경 이벤트/시험 지원 플래그와 공동 검증 fdb7bb2를 C 브랜치에 병합했습니다. 아래의 A 미지원 설명은 이전 버전 기록입니다. 현재 남은 범위는 최신 서버/Agent 실행·운영 배포 및 실제 Windows/PC 3대 검증이며, 자세한 현재 상태는 [전경 감시 인계](c-foreground-handoff.md)와 [A 전경 통합 검증](a-foreground-integration.md)을 따릅니다.
+
 최신 반영: A c5ecfef의 기존 이벤트 구독/시험 상태/RTT 지원과 B b6f76c0를 받았습니다. 아래 ef3f64e 기준 구독 미구현 설명은 당시 기록이며 현재 기존 구독 구현은 완료되어 있습니다. 새 Chrome 전경 이벤트의 C 구현과 A 후속 작업은 [C 전경 감시 인계](c-foreground-handoff.md)를 따릅니다.
 
 후속 공동 검증: A 646d171의 [검증 기록](a-c-week3-validation.md)을 확인하고 최신 C 브랜치에 병합했습니다. 현재 C 코드로 `tests.test_server_exam_stream -v` 9개를 재실행해 전부 통과했습니다. 기존 경고·이력·중복 억제·모드 동기화·재접속·RTT는 실제 로컬 A TLS 서버와 검증했으며, 새 Chrome 전경 이벤트는 아직 이 검증 범위에 포함되지 않습니다. 실제 PC 3대/EC2 검증과 main 병합도 별도입니다.

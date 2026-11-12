@@ -9,11 +9,11 @@
 | PC 3대 비교 | 목록에서 PC별 CPU·RAM·네트워크·RTT·상태·시각 비교 | 실제 PC 3대 공동 검증 |
 | 시험 모드 버튼 | 선택 PC 상세의 ‘시험 모드’ → 켜기·끄기·상태 새로고침 | A 새 명령 중계 지원 |
 | 시험 모드 경고·감지 이력 | 합의된 별도 subscribe_exam/subscribe_status 연결·원문 이벤트·경고/최근 이력·중복 억제 구현 | A c5ecfef의 기존 이벤트 중계와 C 공동 검증 |
-| Chrome 이탈·복귀·감시 공백 | B 전경 이벤트 두 종류 검증·경고·이력·독립 감시 상태 및 초기화 구현 | A 신규 이벤트 중계·exam_foreground_v1 지원 후 실제 Windows 공동 검증 |
+| Chrome 이탈·복귀·감시 공백 | C 구현과 A 18139f1 지원 및 fdb7bb2 로컬 TLS 공동 검증 반영 | 실제 Windows 창 전환·EC2·실제 PC 3대 공동 검증 |
 | 프로세스 그룹·일괄 종료 | 프로세스 창의 ‘같은 이름 그룹’, ‘선택 그룹·PID 일괄 종료’, PID별 결과 | A STOP_PROCESSES 지원 및 실제 TLS 통합 검증 |
 | RTT 표시 | 목록과 상세의 서버 RTT(ms), Agent 시각·상태 및 서버 metrics_stale 동시 확인 | 실행 중 서버/Agent의 최신 코드 적용과 실제 검증 |
 
-추가 기능이 화면에 표시되는 것과 A·B·C 통합 동작 완료는 구분합니다. A c5ecfef에는 기존 시험 이벤트 구독·현재 모드·지원 플래그가 추가됐으며, B b6f76c0의 새 전경 이벤트와 exam_foreground_v1은 아직 A 지원이 필요합니다. 이미 실행 중인 서버/Agent에는 코드가 자동 반영되지 않습니다. 상세 합의와 후속 작업은 [A→C 합의](c-exam-agreement.md), [C 연동 문서](c-exam-integration.md), [Chrome 전경 감시 C 인계](c-foreground-handoff.md)를 따릅니다.
+추가 기능이 화면에 표시되는 것과 실제 PC 3대 통합 완료는 구분합니다. A 18139f1은 B b6f76c0의 전경 이벤트와 exam_foreground_v1을 지원하며 fdb7bb2의 로컬 TLS 공동 검증을 최신 C 브랜치에 병합했습니다. 이미 실행 중인 서버/Agent에는 코드가 자동 반영되지 않습니다. 상세 합의와 후속 작업은 [A→C 합의](c-exam-agreement.md), [C 연동 문서](c-exam-integration.md), [Chrome 전경 감시 C 인계](c-foreground-handoff.md)를 따릅니다.
 
 병합 후 검증: 전체 테스트 142개, 대시보드 스모크, 프로세스 GUI 스모크 모두 통과.
 
