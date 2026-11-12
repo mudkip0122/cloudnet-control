@@ -60,6 +60,22 @@ class ContractTests(unittest.TestCase):
             command_result(req, dict(ok=True, code="EXAM_MODE_ENABLED", exam_mode=dict(
                 enabled=True, exam_id="exam-default", poll_interval=1, monitor_status="starting")))
 
+    def test_missing_exam_policy_is_allowed_but_explicit_empty_or_null_is_not(self):
+        default = request('SET_EXAM_MODE', enabled=True, exam_id='exam-1')
+        self.assertIsNone(command_error(default))
+        for invalid in ([], None, '', ['*.exe']):
+            self.assertEqual(command_error(default | dict(forbidden_processes=invalid)), 'INVALID_EXAM_SETTINGS')
+        self.assertEqual(command_error(default | dict(poll_interval=0)), 'INVALID_EXAM_SETTINGS')
+
+    def test_enabled_result_must_still_include_the_resolved_policy(self):
+        req = request('SET_EXAM_MODE', enabled=True, exam_id='exam-1')
+        mode = dict(enabled=True, exam_id='exam-1', poll_interval=1, monitor_status='starting')
+        response = dict(ok=True, code='EXAM_MODE_ENABLED', exam_mode=mode)
+        with self.assertRaises(ValueError):
+            command_result(req, response)
+        mode['forbidden_processes'] = ['discord.exe']
+        command_result(req, response)
+
     def test_rtt_compatibility_and_invalid_combinations(self):
         self.assertEqual(rtt_fields(metric()), {})
         stamp = datetime.now(timezone.utc).isoformat()

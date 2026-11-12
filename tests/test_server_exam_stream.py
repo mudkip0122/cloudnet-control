@@ -14,6 +14,7 @@ from agent.exam import DEFAULT_FORBIDDEN_PROCESSES
 from agent.main import stream
 from admin_gui.exam_events import ExamEventClient, ExamStore
 from admin_gui.presentation import device_view
+from admin_gui.exam_window import exam_request
 from common.protocol import recv_message, send_message
 from server.audit import AuditStore
 from server.main import MonitoringServer
@@ -109,6 +110,29 @@ class ExamStreamTests(unittest.TestCase):
         send_message(normal, dict(type="LIST_DEVICES"))
         self.assertEqual(recv_message(normal)["type"], "DEVICE_LIST")
         self.assertEqual(self.audit.db.execute("SELECT count(*) FROM exam_events").fetchone()[0], 1)
+
+    def test_c_blank_policy_relay_uses_b_defaults_and_explicit_policy_replaces_them(self):
+        agent, _ = self.connect('agent')
+        commander, _ = self.connect()
+        handler = ExamCommands('PC-01', enabled=True)
+        handler.start_session()
+        for names, expected in (('', sorted(DEFAULT_FORBIDDEN_PROCESSES)), ('custom.exe', ['custom.exe'])):
+            request = exam_request('PC-01', 'on', 'default-policy-test', names, '1')
+            send_message(commander, request)
+            relayed = recv_message(agent)
+            self.assertEqual(relayed, request)
+            if not names:
+                self.assertNotIn('forbidden_processes', relayed)
+            response = handler.handle(relayed)[0]
+            send_message(agent, response)
+            result = recv_message(commander)
+            self.assertTrue(result['ok'])
+            self.assertEqual(result['exam_mode']['forbidden_processes'], expected)
+            query = exam_request('PC-01', 'status')
+            send_message(commander, query)
+            forwarded = recv_message(agent)
+            send_message(agent, handler.handle(forwarded)[0])
+            self.assertEqual(recv_message(commander)['exam_mode']['forbidden_processes'], expected)
 
     def test_other_admin_receives_mode_and_monitor_status_updates(self):
         agent, _ = self.connect("agent")
