@@ -68,6 +68,7 @@ class Dashboard:
         self.table.bind("<<TreeviewSelect>>", self.show_detail)
         detail = ttk.LabelFrame(root, text="선택 PC 상세")
         detail.pack(fill="x", padx=15, pady=10)
+        detail.columnconfigure(1, weight=1)
         self.details = {}
         for index, (key, label) in enumerate((
                 ("name", "PC 이름 / ID"), ("state", "상태"),
@@ -79,20 +80,24 @@ class Dashboard:
             self.details[key] = value
             ttk.Label(detail, text=label).grid(row=index, column=0, sticky="w", padx=12, pady=2)
             ttk.Label(detail, textvariable=value).grid(row=index, column=1, sticky="w", padx=12)
+        actions = ttk.Frame(detail, padding=(4, 4))
+        actions.grid(row=0, column=2, rowspan=10, sticky="ne", padx=16, pady=4)
         self.preview_buttons = []
         for row, action in enumerate(("PC 종료", "PC 재부팅")):
-            button = ctk.CTkButton(detail, text=action,
-                                  command=lambda action=action: self.preview_command(action))
-            button.grid(row=row, column=2, padx=20, pady=4)
+            button = ttk.Button(actions, text=action,
+                                command=lambda action=action: self.preview_command(action))
+            button.grid(row=0, column=row, sticky="ew", padx=4, pady=4)
             self.preview_buttons.append(button)
-        ttk.Label(detail, text="PC 제어 미연동 · 확인창만 표시").grid(row=2, column=2)
-        self.process_button = ctk.CTkButton(detail, text="프로세스 목록", command=self.open_processes,
-                                          state="disabled")
-        self.process_button.grid(row=3, column=2, padx=20, pady=4)
-        self.exam_button = ctk.CTkButton(detail, text="시험 모드", command=self.open_exam, state="disabled")
-        self.exam_button.grid(row=5, column=2, padx=20, pady=4)
+        self.process_button = ttk.Button(actions, text="프로세스 목록", command=self.open_processes,
+                                         state="disabled")
+        self.process_button.grid(row=1, column=0, sticky="ew", padx=4, pady=4)
+        self.exam_button = ttk.Button(actions, text="시험 모드", command=self.open_exam, state="disabled")
+        self.exam_button.grid(row=1, column=1, sticky="ew", padx=4, pady=4)
+        ttk.Label(actions, text="PC 종료·재부팅: 확인창 미리보기", foreground="#64748b").grid(
+            row=2, column=0, columnspan=2, sticky="w", padx=4, pady=(10, 4))
         self.process_hint = tk.StringVar()
-        ttk.Label(detail, textvariable=self.process_hint, wraplength=260).grid(row=4, column=2, padx=12)
+        ttk.Label(actions, textvariable=self.process_hint, wraplength=264, foreground="#64748b").grid(
+            row=3, column=0, columnspan=2, sticky="w", padx=4)
         monitoring = ttk.Frame(root)
         monitoring.pack(fill="both", expand=True, padx=15)
         monitoring.columnconfigure(1, weight=1)

@@ -30,7 +30,7 @@ def main():
         assert len(dashboard.table.get_children()) == 3
         assert "관리자 인증: 미사용" in dashboard.connection_details.get()
         assert "TLS 관리자 인증 연결 필요" in dashboard.process_hint.get()
-        assert dashboard.process_button.cget("state") == "disabled"
+        assert dashboard.process_button.instate(["disabled"])
         for device in devices:
             dashboard.table.selection_set(device["pc_id"])
             dashboard.show_detail()
@@ -75,10 +75,10 @@ def main():
         refresh(True, devices)
         assert "관리자 인증: 성공" in dashboard.connection_details.get()
         assert "sample-admin-token" not in dashboard.connection_details.get()
-        assert dashboard.process_button.cget("state") == "normal"
+        assert not dashboard.process_button.instate(["disabled"])
         refresh(False, "인증 실패 · 다시 실행하세요")
         assert "관리자 인증: 실패" in dashboard.connection_details.get()
-        assert dashboard.process_button.cget("state") == "disabled"
+        assert dashboard.process_button.instate(["disabled"])
         print("PASS: 3 sample PCs, selection persistence, offline, stale, disconnect, empty list")
     finally:
         dashboard.close()
@@ -103,7 +103,7 @@ def sample_checks():
                 dashboard.table.selection_set(pc_id)
                 dashboard.show_detail()
                 assert dashboard.details["state"].get() == expected
-            assert dashboard.process_button.cget("state") == "disabled"
+            assert dashboard.process_button.instate(["disabled"])
             receive.assert_not_called()
             connect.assert_not_called()
             print("PASS: shared sample layout, explicit sample mode, three states, no network")

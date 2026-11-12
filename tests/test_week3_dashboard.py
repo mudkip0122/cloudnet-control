@@ -55,11 +55,11 @@ class WeekThreeTests(unittest.TestCase):
         d = self.dashboard
         d.context, d.token = object(), 'synthetic'
         self.refresh(True, self.devices)
-        self.assertEqual(d.process_button.cget('state'), 'normal')
+        self.assertFalse(d.process_button.instate(['disabled']))
         self.refresh(False, 'synthetic disconnect')
         self.assertEqual(d.usage_values['cpu'].get(), '—')
-        self.assertEqual(d.process_button.cget('state'), 'disabled')
-        self.assertTrue(all(button.cget('state') == 'disabled' for button in d.preview_buttons))
+        self.assertTrue(d.process_button.instate(['disabled']))
+        self.assertTrue(all(button.instate(['disabled']) for button in d.preview_buttons))
         self.assertIn('이전 측정 기록', d.charts.notice.cget('text'))
         self.assertEqual(len(d.history.samples['PC-01']), 1)
 
@@ -108,4 +108,4 @@ class WeekThreeTests(unittest.TestCase):
         self.refresh(False, 'synthetic disconnect')
         self.assertIn('연결 끊김', window.monitor_text.get())
         self.assertEqual(len(window.history_table.get_children()), 1)
-        self.assertEqual(d.exam_button.cget('state'), 'normal')
+        self.assertFalse(d.exam_button.instate(['disabled']))

@@ -104,3 +104,45 @@ class GroupWindowTests(unittest.TestCase):
         with patch('admin_gui.process_window.messagebox.askokcancel', side_effect=change):
             self.window.stop_batch()
         self.assertEqual(self.submitted, [])
+
+    def test_search_name_pid_user_empty_and_clear(self):
+        window = self.window
+        window.search.set('APP.EXE')
+        self.assertEqual(window.table.get_children('group:app.exe'), ('1', '2'))
+        self.assertTrue(window.table.item('group:app.exe', 'open'))
+        self.assertIn('표시 2 / 전체 4개', window.search_count.get())
+        window.search.set('3')
+        self.assertEqual(window.table.get_children(), ('3',))
+        window.search.set('U')
+        self.assertEqual(window.table.get_children('group:app.exe'), ('1', '2'))
+        window.search.set('no-such-process')
+        self.assertEqual(window.table.get_children(), ())
+        self.assertIn('검색 결과 없음', window.search_count.get())
+        self.assertTrue(window.batch_button.instate(['disabled']))
+        window.search.set('')
+        self.assertEqual(len(window.table.get_children()), 3)
+
+    def test_filtered_group_batch_never_adds_hidden_process(self):
+        window = self.window
+        window.rows['5'] = dict(pid=5, name='APP.exe', username='hidden-user', memory_bytes=10,
+                                create_time=5, can_stop=True)
+        window.rows['1']['username'] = 'visible-user'
+        window.search.set('visible-user')
+        window.table.selection_set('group:app.exe')
+        with patch('admin_gui.process_window.messagebox.askokcancel', return_value=True):
+            window.stop_batch()
+        self.assertEqual(self.submitted[-1]['targets'], [dict(pid=1, create_time=1)])
+
+    def test_search_survives_refresh_and_reused_pid_loses_selection(self):
+        window = self.window
+        window.grouped.set(False)
+        window.search.set('app')
+        window.table.selection_set('1')
+        window.refresh()
+        request = self.submitted[-1]
+        rows = [dict(row) for row in window.rows.values()]
+        rows[0]['create_time'] = 99
+        window.handle_result(request, dict(ok=True, code='PROCESS_LIST', processes=rows))
+        self.assertEqual(window.search.get(), 'app')
+        self.assertEqual(window.table.get_children(), ('1', '2'))
+        self.assertEqual(window.table.selection(), ())
