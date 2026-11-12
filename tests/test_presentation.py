@@ -34,6 +34,11 @@ class PresentationTests(unittest.TestCase):
         self.device["metrics"] = None
         self.assertEqual(device_view(self.device)["state"], "데이터 없음")
 
+    def test_invalid_metrics_are_missing(self):
+        for value in (float('nan'), float('inf'), -1, True, 'bad', 101):
+            self.device['metrics']['cpu_percent'] = value
+            self.assertEqual(device_view(self.device, now=self.now)['cpu'], '—')
+
 
 if __name__ == "__main__":
     unittest.main()

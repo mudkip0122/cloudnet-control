@@ -55,18 +55,22 @@ class ProcessWindow:
         self.sort_descending = False
         self.column_titles = {}
         self.last_stop = None
+        self.groups = {}
+        self.grouped = tk.BooleanVar(value=False)
         self.target_text = tk.StringVar(value="PC를 선택하세요")
         self.status = tk.StringVar(value="목록을 새로고침하세요")
         self.outcome = tk.StringVar(value="")
         ttk.Label(self.window, textvariable=self.target_text).pack(anchor="w", padx=12, pady=8)
         ttk.Label(self.window, textvariable=self.status).pack(anchor="w", padx=12)
-        columns = ("pid", "name", "username", "memory", "can_stop", "protected_reason")
+        columns = ("pid", "name", "username", "memory", "can_stop", "protected_reason", "create_time")
         container = ttk.Frame(self.window)
         container.pack(fill="both", expand=True, padx=12, pady=8)
-        self.table = ttk.Treeview(container, columns=columns, show="headings", selectmode="browse")
+        self.table = ttk.Treeview(container, columns=columns, show="tree headings", selectmode="extended")
+        self.table.heading("#0", text="그룹 / 개수")
+        self.table.column("#0", width=170)
         for key, title, width in zip(columns,
-                ("PID", "이름", "사용자", "메모리 (MiB)", "종료 가능", "보호 이유"),
-                (70, 180, 180, 110, 90, 260)):
+                ("PID", "이름", "사용자", "메모리 (MiB)", "종료 가능", "보호 이유", "생성 시각 (Unix 초)"),
+                (70, 180, 180, 110, 90, 260, 150)):
             self.column_titles[key] = title
             self.table.heading(key, text=title, command=lambda column=key: self.sort_by(column))
             self.table.column(key, width=width, minwidth=60)
@@ -83,6 +87,12 @@ class ProcessWindow:
         self.refresh_button.pack(side="left")
         self.stop_button = ttk.Button(actions, text="선택 프로세스 종료", command=self.stop_selected)
         self.stop_button.pack(side="left", padx=8)
+        ttk.Checkbutton(actions, text="같은 이름 그룹", variable=self.grouped,
+                        command=self.render_rows).pack(side="left", padx=8)
+        self.batch_button = ttk.Button(actions, text="선택 그룹·PID 일괄 종료", command=self.stop_batch)
+        self.batch_button.pack(side="left", padx=8)
+        self.batch_results = tk.Text(self.window, height=5, state="disabled")
+        self.batch_results.pack(fill="x", padx=12)
         ttk.Label(self.window, textvariable=self.outcome, wraplength=1000).pack(anchor="w", padx=12, pady=8)
         self.window.protocol("WM_DELETE_WINDOW", self.close)
         self.timer = self.window.after(100, self.tick)
@@ -99,6 +109,9 @@ class ProcessWindow:
             self.status.set("대상 변경 · 전체 목록을 새로고침하세요" if online else "연결된 PC를 선택하세요")
             self.outcome.set("")
             self.last_stop = None
+            self.batch_results.configure(state="normal")
+            self.batch_results.delete("1.0", "end")
+            self.batch_results.configure(state="disabled")
         self.target, self.online = target, online
         self.target_text.set(f"대상 PC: {target[1]} / {target[0]}" if target else "PC를 선택하세요")
         self.update_buttons()
@@ -114,6 +127,8 @@ class ProcessWindow:
         self.apply_sort()
 
     def apply_sort(self):
+        if self.grouped.get():
+            return
         def value(key):
             row = self.rows[key]
             if self.sort_column == "memory":
@@ -142,8 +157,11 @@ class ProcessWindow:
         self.refresh_button.configure(state="normal" if ready else "disabled")
         selected = self.table.selection()
         row = self.rows.get(selected[0]) if selected else None
-        allowed = ready and self.complete and row and row.get("can_stop") is True
+        allowed = ready and self.complete and len(selected) == 1 and row and row.get("can_stop") is True
         self.stop_button.configure(state="normal" if allowed else "disabled")
+        candidates = self.selected_rows()
+        self.batch_button.configure(state="normal" if ready and self.complete and any(
+            row.get("can_stop") is True for row in candidates) else "disabled")
         if not self.authorized():
             self.status.set("프로세스 조회·종료는 TLS 관리자 인증 연결에서 사용할 수 있습니다")
 
@@ -164,11 +182,68 @@ class ProcessWindow:
         self.status.set("전체 프로세스 목록 수신 중 · 모든 페이지를 받은 뒤 표시합니다")
         self.submit(command_request(self.target[0], "LIST_PROCESSES"))
 
+    def render_rows(self):
+        for item in self.table.get_children():
+            self.table.delete(item)
+        self.groups = {}
+        for key, row in self.rows.items():
+            parent = ""
+            name = row.get("name")
+            if self.grouped.get() and name:
+                parent = "group:" + name.casefold()
+                if parent not in self.groups:
+                    self.groups[parent] = []
+                    self.table.insert("", "end", iid=parent, text=name)
+                self.groups[parent].append(key)
+            memory = row.get("memory_bytes")
+            self.table.insert(parent, "end", iid=key, values=(row["pid"], name or "확인 불가",
+                row.get("username") or "확인 불가", f"{memory / 1048576:.2f}" if memory is not None else "확인 불가",
+                "가능" if row["can_stop"] else "불가",
+                PROTECTION_REASONS.get(row.get("protected_reason"), row.get("protected_reason") or "—"), row.get("create_time") or "확인 불가"))
+        for group, keys in self.groups.items():
+            memory = [self.rows[key].get("memory_bytes") for key in keys]
+            total = "확인 불가" if any(value is None for value in memory) else f"{sum(memory) / 1048576:.2f}"
+            self.table.item(group, text=f"{self.rows[keys[0]]['name']} ({len(keys)}개)", values=("", "", "", total))
+        self.apply_sort()
+        self.update_buttons()
+
+    def selected_rows(self):
+        keys = set()
+        for key in self.table.selection():
+            keys.update(self.groups.get(key, [key]))
+        return [dict(self.rows[key]) for key in sorted(keys) if key in self.rows]
+
+    def stop_batch(self):
+        if not self.online or not self.authorized() or not self.complete or self.pending is not None:
+            return
+        rows, target, generation = self.selected_rows(), self.target, self.generation
+        try:
+            request = command_request(target[0], "STOP_PROCESSES", rows)
+        except ValueError as exc:
+            messagebox.showinfo("일괄 종료", str(exc), parent=self.window)
+            return
+        names = ", ".join(sorted({row.get("name") or "확인 불가" for row in rows}))
+        pids = ", ".join(str(item["pid"]) for item in request["targets"])
+        if not messagebox.askokcancel("일괄 종료 확인",
+                f"PC: {target[1]} / {target[0]}\n그룹: {names}\nPID: {pids}\n"
+                f"종료 대상 {len(request['targets'])}개 · 제외 보호 항목 {len(rows) - len(request['targets'])}개\n"
+                "같은 이름이어도 경로·사용자·프로세스 트리는 다를 수 있습니다.\n"
+                "강제 종료 시 미저장 내용이 사라지고 브라우저 시험 창도 닫힐 수 있습니다.", parent=self.window):
+            return
+        if (self.target != target or self.generation != generation or not self.online
+                or not self.complete or self.pending is not None
+                or any(self.rows.get(str(row['pid'])) != row for row in rows)):
+            return
+        # Only the identities shown in the confirmation are submitted.
+        self.complete = False
+        self.status.set("일괄 종료 결과 대기 중")
+        self.submit(request)
+
     def stop_selected(self):
         selected = self.table.selection()
         row = self.rows.get(selected[0]) if selected else None
         if (not self.online or not self.authorized() or not self.complete or self.pending is not None
-                or not row or row.get("can_stop") is not True):
+                or len(selected) != 1 or not row or row.get("can_stop") is not True):
             return
         target, identity = self.target, dict(row)
         if not messagebox.askokcancel("프로세스 종료 확인",
@@ -218,8 +293,10 @@ class ProcessWindow:
                     self.table.insert("", "end", iid=key, values=(row["pid"], row.get("name") or "확인 불가",
                         row.get("username") or "확인 불가", f"{memory / 1048576:.2f}" if memory is not None else "확인 불가",
                         "가능" if row["can_stop"] else "불가",
-                        PROTECTION_REASONS.get(row.get("protected_reason"), row.get("protected_reason") or "—")))
+                        PROTECTION_REASONS.get(row.get("protected_reason"), row.get("protected_reason") or "—"), row.get("create_time") or "확인 불가"))
                 self.apply_sort()
+                if self.grouped.get():
+                    self.render_rows()
                 if previous is not None:
                     current = self.rows.get(str(previous["pid"]))
                     if current is not None and current.get("create_time") == previous.get("create_time"):
@@ -231,6 +308,23 @@ class ProcessWindow:
                 self.complete = False
                 self.status.set("목록 수신 실패 · 불완전하거나 이전 목록으로는 종료할 수 없습니다")
                 self.outcome.set(RESULTS.get(result.get("code"), "조회 실패: " + str(result.get("code"))))
+        elif request["action"] == "STOP_PROCESSES":
+            text = "결과 미확인 · " + str(result.get("code"))
+            if result.get("code") == "PROCESS_BATCH_RESULT" and result.get("ok") is True:
+                items = result.get("results")
+                items = items if isinstance(items, list) else []
+                expected = [(x['pid'], x['create_time']) for x in request['targets']]
+                actual = [(x.get('pid'), x.get('create_time')) for x in items if isinstance(x, dict)]
+                if actual == expected and len(items) == len(expected):
+                    text = "처리 결과 (전체 종료 성공을 뜻하지 않음): " + str(result.get("counts")) + "\n"
+                    text += "\n".join(f"PID {x['pid']} · {x.get('code')} · {RESULTS.get(x.get('code'), x.get('reason', '확인 필요'))}" for x in items)
+                else:
+                    text = "결과 대상 불일치 · 결과 미확인"
+            self.batch_results.configure(state="normal")
+            self.batch_results.delete("1.0", "end")
+            self.batch_results.insert("1.0", text)
+            self.batch_results.configure(state="disabled")
+            self.refresh()
         else:
             code = result.get("code")
             self.last_stop = {"request": request, "code": code, "ok": result.get("ok") is True}
