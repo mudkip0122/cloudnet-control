@@ -9,8 +9,12 @@ import socket
 import ssl
 import threading
 import time
+import sqlite3
+from uuid import uuid4
 from common.protocol import recv_message, send_message
 from common.security import load_auth, loopback
+from server.audit import AuditStore
+from server.contracts import command_error, command_result, exam_event, rtt_fields, text
 
 LOG = logging.getLogger("cloudnet.server")
 
@@ -23,6 +27,7 @@ class Session:
         self.notifications = queue.Queue(maxsize=32)
         self.stopped = threading.Event()
         self.writer = None
+        self.executor_id = str(uuid4())
 
     def send(self, message):
         with self.send_lock:
@@ -62,10 +67,11 @@ def utc_now():
 
 
 class MonitoringServer:
-    def __init__(self, auth=None, heartbeat_timeout=15):
+    def __init__(self, auth=None, heartbeat_timeout=15, audit=None):
         if not math.isfinite(heartbeat_timeout) or heartbeat_timeout <= 0:
             raise ValueError("Heartbeat timeout must be positive and finite")
         self.auth = auth
+        self.audit = audit
         self.heartbeat_timeout = heartbeat_timeout
         self.lock = threading.Lock()
         self.devices = {}
@@ -74,6 +80,25 @@ class MonitoringServer:
         self.connections = {}
         self.pending_commands = {}
         self.seen_commands = {}
+        self.metrics_received_at = {}
+        self.exam_states = {}
+        self.event_rates = {}
+
+    def device_snapshot(self, pc_id):
+        """Called under lock; freshness uses server time, never Agent clock."""
+        device = dict(self.devices[pc_id])
+        received = self.metrics_received_at.get(pc_id)
+        device["metrics_stale"] = (not device["online"] or received is None
+                                   or time.monotonic() - received > 6)
+        return device
+
+    def notify_admin(self, conn, message):
+        with self.lock:
+            session = self.connections.get(conn)
+        if session is None:
+            raise OSError("Administrator disconnected")
+        # Never wait for an administrator's socket on an Agent reader thread.
+        session.notify(message)
 
     def send(self, conn, message):
         with self.lock:
@@ -84,7 +109,7 @@ class MonitoringServer:
 
     def notify_status(self, pc_id):
         with self.lock:
-            message = {"type": "STATUS_UPDATE", "device": dict(self.devices[pc_id]),
+            message = {"type": "STATUS_UPDATE", "device": self.device_snapshot(pc_id),
                        "timestamp": utc_now()}
             admins = tuple(self.admins)
         for admin in admins:
@@ -101,7 +126,7 @@ class MonitoringServer:
 
     def snapshot(self):
         with self.lock:
-            return {"type": "DEVICE_LIST", "devices": [dict(d) for d in self.devices.values()]}
+            return {"type": "DEVICE_LIST", "devices": [self.device_snapshot(pc_id) for pc_id in self.devices]}
 
     def handle(self, conn):
         pc_id = None
@@ -141,14 +166,21 @@ class MonitoringServer:
                         raise ValueError("PC ID is already connected")
                     pc_id = candidate
                     self.sessions[pc_id] = conn
+                    self.metrics_received_at.pop(pc_id, None)
+                    self.exam_states.pop(pc_id, None)
+                    self.event_rates.pop(pc_id, None)
                     self.devices[pc_id] = {"pc_id": pc_id, "pc_name": message["pc_name"],
-                                           "online": True, "last_received": utc_now(), "metrics": None}
+                                           "online": True, "last_received": utc_now(),
+                                           "last_metrics_received": None, "metrics": None}
             response = {"type": "REGISTER_RESULT", "ok": True}
             if pc_id is not None:
                 response["pc_id"] = pc_id
+                response.update(heartbeat_interval=min(5, self.heartbeat_timeout / 3), rtt_v1=True)
+                # Exam support flags await agreement on the A -> C event transport.
             session.send(response)
-            if role == "admin" and subscribe:
+            if role == "admin":
                 session.start_notifications()
+            if role == "admin" and subscribe:
                 with self.lock:
                     self.admins.add(session)
             LOG.info("Registered role=%s pc_id=%s", role, pc_id)
@@ -169,6 +201,12 @@ class MonitoringServer:
                     self.route_result(conn, pc_id, message)
                 elif role == "agent" and message["type"] == "METRICS":
                     self.update_metrics(pc_id, message)
+                elif role == "agent" and message["type"] == "RTT_PING":
+                    if message.get("pc_id") != pc_id or not text(message.get("probe_id")):
+                        raise ValueError("Invalid RTT probe identity")
+                    session.send({"type": "RTT_PONG", "pc_id": pc_id, "probe_id": message["probe_id"]})
+                elif role == "agent" and message["type"] == "EXAM_EVENT":
+                    self.receive_exam_event(pc_id, message)
                 elif role == "agent" and message["type"] == "HEARTBEAT":
                     if message.get("pc_id") != pc_id:
                         raise ValueError("PC ID must match the registered session")
@@ -183,6 +221,8 @@ class MonitoringServer:
                 session.send({"type": "ERROR", "code": "INVALID_MESSAGE", "message": str(exc)})
             except OSError:
                 pass
+        except sqlite3.Error:
+            LOG.error("Audit storage unavailable; closing session without retrying a command")
         except (OSError, EOFError):
             pass
         finally:
@@ -200,6 +240,7 @@ class MonitoringServer:
                     if self.sessions.get(pc_id) is conn:
                         del self.sessions[pc_id]
                         self.devices[pc_id]["online"] = False
+                        self.exam_states.pop(pc_id, None)
                         disconnected = True
                 if disconnected:
                     LOG.info("Disconnected pc_id=%s", pc_id)
@@ -218,8 +259,10 @@ class MonitoringServer:
         error = None
         if not isinstance(admin, ssl.SSLSocket) or self.auth is None:
             error = "TLS_REQUIRED"
-        elif request.get("action") not in ("LIST_PROCESSES", "STOP_PROCESS"):
+        elif request.get("action") not in ("LIST_PROCESSES", "STOP_PROCESS", "STOP_PROCESSES",
+                                           "SET_EXAM_MODE", "GET_EXAM_STATUS"):
             error = "UNSUPPORTED_ACTION"
+        error = error or command_error(request)
         try:
             expires = datetime.fromisoformat(request["expires_at"].replace("Z", "+00:00"))
             remaining = (expires - datetime.now(timezone.utc)).total_seconds()
@@ -241,10 +284,15 @@ class MonitoringServer:
                 error = error or "DUPLICATE_COMMAND"
             if len(self.seen_commands) >= 4096:
                 error = error or "COMMAND_CAPACITY"
+            if error is None and self.audit is not None:
+                executor = self.connections.get(admin)
+                if not self.audit.reserve(request, executor.executor_id if executor else "unknown", utc_now()):
+                    error = "DUPLICATE_COMMAND"
             if error is None:
                 self.seen_commands[command_id] = now + 60
                 self.pending_commands[command_id] = {"admin": admin, "target": target, "agent": agent,
-                    "until": now + remaining, "pages": None, "received": set(), "action": request["action"]}
+                    "until": now + remaining, "pages": None, "received": set(), "action": request["action"],
+                    "request": request}
         if error is not None:
             self.send(admin, {"type": "COMMAND_RESULT", "pc_id": target, "command_id": command_id,
                               "ok": False, "code": error})
@@ -271,6 +319,7 @@ class MonitoringServer:
             if pending["until"] <= time.monotonic():
                 del self.pending_commands[command_id]
                 return
+            command_result(pending["request"], message)
             finished = True
             if pending["action"] == "LIST_PROCESSES" and message.get("ok") is True:
                 page, pages = message.get("page"), message.get("pages")
@@ -283,14 +332,33 @@ class MonitoringServer:
                 pending["received"].add(page)
                 finished = len(pending["received"]) == pages
             admin = pending["admin"]
+            if self.audit is not None:
+                self.audit.result(command_id, message, complete=finished)
+            if (pending["action"] in ("SET_EXAM_MODE", "GET_EXAM_STATUS")
+                    and message.get("ok") is True and isinstance(message.get("exam_mode"), dict)):
+                self.exam_states[pc_id] = dict(message["exam_mode"])
             if finished:
                 del self.pending_commands[command_id]
         try:
-            self.send(admin, message)
+            self.notify_admin(admin, message)
         except OSError:
             # A closed admin must not disconnect the Agent.
             with self.lock:
                 self.pending_commands.pop(command_id, None)
+
+    def receive_exam_event(self, pc_id, message):
+        clean = exam_event(message, pc_id)
+        if self.audit is None:
+            raise ValueError("Exam event storage is not configured")
+        now = time.monotonic()
+        with self.lock:
+            started, count = self.event_rates.get(pc_id, (now, 0))
+            if now - started >= 1:
+                started, count = now, 0
+            if count >= 200:
+                raise ValueError("Exam event rate limit exceeded")
+            self.event_rates[pc_id] = (started, count + 1)
+        return self.audit.event(clean, utc_now())
 
     def update_metrics(self, pc_id, message):
         if message.get("pc_id") != pc_id:
@@ -302,18 +370,25 @@ class MonitoringServer:
         if parsed.tzinfo is None:
             raise ValueError("Timestamp requires a timezone")
         clean = {"type": "METRICS", "pc_id": pc_id, "timestamp": timestamp}
+        clean.update(rtt_fields(message))
         for field in ("cpu_percent", "ram_percent", "upload_mbps", "download_mbps"):
             if field not in message:
                 raise ValueError("Missing metric: " + field)
             value = message[field]
             if value is not None:
-                if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+                if (isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0
+                        or (isinstance(value, float) and not math.isfinite(value))):
                     raise ValueError("Invalid metric: " + field)
+                if value > 1.7976931348623157e308:
+                    raise ValueError("Metric exceeds finite numeric range: " + field)
                 if field.endswith("percent") and value > 100:
                     raise ValueError("Percent must be between 0 and 100")
             clean[field] = value
         with self.lock:
-            self.devices[pc_id].update(metrics=clean, last_received=utc_now())
+            received = utc_now()
+            self.devices[pc_id].update(metrics=clean, last_received=received,
+                                       last_metrics_received=received)
+            self.metrics_received_at[pc_id] = time.monotonic()
 
 
 def handle_client(conn):
@@ -328,6 +403,7 @@ def main():
     parser.add_argument("--tls-key")
     parser.add_argument("--auth-file")
     parser.add_argument("--heartbeat-timeout", type=float, default=15)
+    parser.add_argument("--audit-db", default="runtime/server-audit.sqlite3")
     args = parser.parse_args()
     if not math.isfinite(args.heartbeat_timeout) or args.heartbeat_timeout <= 0:
         parser.error("--heartbeat-timeout must be positive and finite")
@@ -346,7 +422,11 @@ def main():
             context.load_cert_chain(args.tls_cert, args.tls_key)
     except (ValueError, OSError, ssl.SSLError) as exc:
         parser.error(str(exc))
-    state = MonitoringServer(auth, args.heartbeat_timeout)
+    try:
+        audit = AuditStore(args.audit_db)
+    except (OSError, sqlite3.Error):
+        parser.error("Cannot open audit database; check the configured writable path")
+    state = MonitoringServer(auth, args.heartbeat_timeout, audit=audit)
     def serve(conn):
         try:
             with conn:
