@@ -62,6 +62,16 @@ class ProcessWindow:
         self.outcome = tk.StringVar(value="")
         ttk.Label(self.window, textvariable=self.target_text).pack(anchor="w", padx=12, pady=8)
         ttk.Label(self.window, textvariable=self.status).pack(anchor="w", padx=12)
+        search_bar = ttk.Frame(self.window)
+        search_bar.pack(fill="x", padx=12, pady=(8, 0))
+        ttk.Label(search_bar, text="검색 (이름·PID·사용자)").pack(side="left")
+        self.search = tk.StringVar()
+        self.search_entry = ttk.Entry(search_bar, textvariable=self.search)
+        self.search_entry.pack(side="left", fill="x", expand=True, padx=8)
+        ttk.Button(search_bar, text="지우기", command=lambda: self.search.set("")).pack(side="left")
+        self.search_count = tk.StringVar(value="표시 0 / 전체 0개")
+        ttk.Label(search_bar, textvariable=self.search_count).pack(side="left", padx=(12, 0))
+        self.search_entry.bind("<Escape>", lambda event: self.search.set(""))
         columns = ("pid", "name", "username", "memory", "can_stop", "protected_reason", "create_time")
         container = ttk.Frame(self.window)
         container.pack(fill="both", expand=True, padx=12, pady=8)
@@ -95,6 +105,7 @@ class ProcessWindow:
         self.batch_results.pack(fill="x", padx=12)
         ttk.Label(self.window, textvariable=self.outcome, wraplength=1000).pack(anchor="w", padx=12, pady=8)
         self.window.protocol("WM_DELETE_WINDOW", self.close)
+        self.search.trace_add("write", lambda *args: self.render_rows())
         self.timer = self.window.after(100, self.tick)
 
     def set_target(self, device, connected):
@@ -104,8 +115,7 @@ class ProcessWindow:
             self.generation += 1
             self.complete = False
             self.rows = {}
-            for item in self.table.get_children():
-                self.table.delete(item)
+            self.render_rows()
             self.status.set("대상 변경 · 전체 목록을 새로고침하세요" if online else "연결된 PC를 선택하세요")
             self.outcome.set("")
             self.last_stop = None
@@ -182,18 +192,26 @@ class ProcessWindow:
         self.status.set("전체 프로세스 목록 수신 중 · 모든 페이지를 받은 뒤 표시합니다")
         self.submit(command_request(self.target[0], "LIST_PROCESSES"))
 
-    def render_rows(self):
+    def render_rows(self, preserve_selection=True):
+        selected = {key: self.rows[key] for key in self.table.selection() if key in self.rows} if preserve_selection else {}
+        expanded = {key for key in self.groups if self.table.exists(key) and self.table.item(key, "open")}
         for item in self.table.get_children():
             self.table.delete(item)
         self.groups = {}
+        query = self.search.get().strip().casefold()
+        visible = 0
         for key, row in self.rows.items():
+            if query and not any(query in str(row.get(field) if row.get(field) is not None else "").casefold()
+                                 for field in ("name", "pid", "username")):
+                continue
+            visible += 1
             parent = ""
             name = row.get("name")
             if self.grouped.get() and name:
                 parent = "group:" + name.casefold()
                 if parent not in self.groups:
                     self.groups[parent] = []
-                    self.table.insert("", "end", iid=parent, text=name)
+                    self.table.insert("", "end", iid=parent, text=name, open=bool(query) or parent in expanded)
                 self.groups[parent].append(key)
             memory = row.get("memory_bytes")
             self.table.insert(parent, "end", iid=key, values=(row["pid"], name or "확인 불가",
@@ -205,6 +223,13 @@ class ProcessWindow:
             total = "확인 불가" if any(value is None for value in memory) else f"{sum(memory) / 1048576:.2f}"
             self.table.item(group, text=f"{self.rows[keys[0]]['name']} ({len(keys)}개)", values=("", "", "", total))
         self.apply_sort()
+        for key, previous in selected.items():
+            if self.table.exists(key) and self.rows[key].get("create_time") == previous.get("create_time"):
+                self.table.selection_add(key)
+        summary = f"표시 {visible} / 전체 {len(self.rows)}개"
+        if query:
+            summary += " · 검색 결과만 선택" if visible else " · 검색 결과 없음"
+        self.search_count.set(summary)
         self.update_buttons()
 
     def selected_rows(self):
@@ -286,20 +311,12 @@ class ProcessWindow:
                 selected = self.table.selection()
                 previous = self.rows.get(selected[0]) if selected else None
                 self.rows = {str(row["pid"]): row for row in result["processes"]}
-                for item in self.table.get_children():
-                    self.table.delete(item)
-                for key, row in self.rows.items():
-                    memory = row.get("memory_bytes")
-                    self.table.insert("", "end", iid=key, values=(row["pid"], row.get("name") or "확인 불가",
-                        row.get("username") or "확인 불가", f"{memory / 1048576:.2f}" if memory is not None else "확인 불가",
-                        "가능" if row["can_stop"] else "불가",
-                        PROTECTION_REASONS.get(row.get("protected_reason"), row.get("protected_reason") or "—"), row.get("create_time") or "확인 불가"))
-                self.apply_sort()
-                if self.grouped.get():
-                    self.render_rows()
+                # Rebuild the filtered view only after the full snapshot arrives.
+                self.render_rows(preserve_selection=False)
                 if previous is not None:
                     current = self.rows.get(str(previous["pid"]))
-                    if current is not None and current.get("create_time") == previous.get("create_time"):
+                    if (current is not None and self.table.exists(str(previous["pid"]))
+                            and current.get("create_time") == previous.get("create_time")):
                         self.table.selection_set(str(previous["pid"]))
                 self.complete = True
                 self.status.set(f"전체 목록 수신 완료 · {len(self.rows)}개" if self.rows else "프로세스 데이터 없음")

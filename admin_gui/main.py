@@ -57,6 +57,9 @@ class Dashboard:
         ttk.Label(root, textvariable=self.exam_stream).pack()
         self.exam_warning = tk.StringVar(value="금지 프로그램 감지 이력 없음 · 감시 정상/시험 준수를 뜻하지 않음")
         ttk.Label(root, textvariable=self.exam_warning, foreground="#b91c1c", wraplength=1050).pack(padx=15)
+        self.foreground_warning = tk.StringVar(value="Chrome 이탈·복귀 감지 이력 없음 · 활성 창 감시 상태는 선택 PC 상세에서 확인")
+        self.foreground_notice = ttk.Label(root, textvariable=self.foreground_warning, foreground="#64748b", wraplength=1050)
+        self.foreground_notice.pack(padx=15)
         columns = ("name", "state", "cpu", "ram", "up", "down", "rtt", "time")
         self.table = ttk.Treeview(root, columns=columns, show="headings", height=5)
         for col, title in zip(columns, ("PC 이름 / ID", "상태", "CPU %", "RAM %", "업로드 Mbps", "다운로드 Mbps", "서버 RTT(ms)", "측정 시각 UTC")):
@@ -68,31 +71,37 @@ class Dashboard:
         self.table.bind("<<TreeviewSelect>>", self.show_detail)
         detail = ttk.LabelFrame(root, text="선택 PC 상세")
         detail.pack(fill="x", padx=15, pady=10)
+        detail.columnconfigure(1, weight=1)
         self.details = {}
         for index, (key, label) in enumerate((
                 ("name", "PC 이름 / ID"), ("state", "상태"),
                 ("up", "업로드 Mbps"), ("down", "다운로드 Mbps"),
                 ("time", "측정 시각 UTC"), ("received", "서버 측정 수신 UTC"),
                 ("age", "측정 후 경과"), ("gui_received", "GUI 목록 수신 UTC"),
-                ("snapshot_age", "목록 수신 후 경과"), ("rtt", "서버 RTT(ms)"))):
+                ("snapshot_age", "목록 수신 후 경과"), ("rtt", "서버 RTT(ms)"),
+                ("foreground", "Chrome 활성 창 감시"))):
             value = tk.StringVar(value="—")
             self.details[key] = value
             ttk.Label(detail, text=label).grid(row=index, column=0, sticky="w", padx=12, pady=2)
             ttk.Label(detail, textvariable=value).grid(row=index, column=1, sticky="w", padx=12)
+        actions = ttk.Frame(detail, padding=(4, 4))
+        actions.grid(row=0, column=2, rowspan=11, sticky="ne", padx=16, pady=4)
         self.preview_buttons = []
         for row, action in enumerate(("PC 종료", "PC 재부팅")):
-            button = ctk.CTkButton(detail, text=action,
-                                  command=lambda action=action: self.preview_command(action))
-            button.grid(row=row, column=2, padx=20, pady=4)
+            button = ttk.Button(actions, text=action,
+                                command=lambda action=action: self.preview_command(action))
+            button.grid(row=0, column=row, sticky="ew", padx=4, pady=4)
             self.preview_buttons.append(button)
-        ttk.Label(detail, text="PC 제어 미연동 · 확인창만 표시").grid(row=2, column=2)
-        self.process_button = ctk.CTkButton(detail, text="프로세스 목록", command=self.open_processes,
-                                          state="disabled")
-        self.process_button.grid(row=3, column=2, padx=20, pady=4)
-        self.exam_button = ctk.CTkButton(detail, text="시험 모드", command=self.open_exam, state="disabled")
-        self.exam_button.grid(row=5, column=2, padx=20, pady=4)
+        self.process_button = ttk.Button(actions, text="프로세스 목록", command=self.open_processes,
+                                         state="disabled")
+        self.process_button.grid(row=1, column=0, sticky="ew", padx=4, pady=4)
+        self.exam_button = ttk.Button(actions, text="시험 모드", command=self.open_exam, state="disabled")
+        self.exam_button.grid(row=1, column=1, sticky="ew", padx=4, pady=4)
+        ttk.Label(actions, text="PC 종료·재부팅: 확인창 미리보기", foreground="#64748b").grid(
+            row=2, column=0, columnspan=2, sticky="w", padx=4, pady=(10, 4))
         self.process_hint = tk.StringVar()
-        ttk.Label(detail, textvariable=self.process_hint, wraplength=260).grid(row=4, column=2, padx=12)
+        ttk.Label(actions, textvariable=self.process_hint, wraplength=264, foreground="#64748b").grid(
+            row=3, column=0, columnspan=2, sticky="w", padx=4)
         monitoring = ttk.Frame(root)
         monitoring.pack(fill="both", expand=True, padx=15)
         monitoring.columnconfigure(1, weight=1)
@@ -244,6 +253,8 @@ class Dashboard:
             generation, connected, label = self.exam_client.connection.get_nowait()
             if generation > 1 or self.exam_generation and not connected:
                 self.exam_gap = True
+                self.exam_store.foreground.clear()
+            self.exam_store.foreground_stream_connected = connected
             self.exam_generation, self.exam_stream_connected = generation, connected
             self.exam_stream.set("시험 이벤트: " + label + (" · 이전 수신 공백 가능" if self.exam_gap else ""))
         except queue.Empty:
@@ -256,7 +267,7 @@ class Dashboard:
                 break
             kind = message.get('type')
             if kind == 'EXAM_EVENT':
-                self.exam_store.accept(message)
+                self.exam_store.accept(message, apply_current=generation == self.exam_generation and self.exam_stream_connected)
             elif generation == self.exam_generation and self.exam_stream_connected and self.connected:
                 if kind == 'DEVICE_LIST':
                     self.exam_store.snapshot(message['devices'])
@@ -267,11 +278,20 @@ class Dashboard:
             process = event['process']
             self.exam_warning.set(f"금지 프로그램 실행 감지 이력 · PC {event['pc_id']} · 시험 {event['exam_id']} · "
                 f"{process['name']} (PID {process['pid']}) · {event['timestamp']} · 현재 실행 여부 미확인")
+        event = self.exam_store.latest_foreground
+        if event is not None:
+            label = 'Chrome 이탈' if event['transition'] == 'left' else 'Chrome 복귀'
+            process = event['process']
+            self.foreground_warning.set(f"{label} 감지 이력 · PC {event['pc_id']} · 시험 {event['exam_id']} · "
+                f"{event['previous_process']['name']} → {process['name']} (PID {process['pid']}) · {event['timestamp']}")
+            self.foreground_notice.configure(foreground='#b91c1c' if event['transition'] == 'left' else '#047857')
 
     def show_detail(self, event=None):
         selection = self.table.selection()
         device = self.devices.get(selection[0]) if selection else None
         view = device_view(device, self.connected, now=self.sample_now) if device else {}
+        if device:
+            view['foreground'] = self.exam_store.foreground_state(device['pc_id'], self.connected)
         if device and self.snapshot_received is not None:
             view["gui_received"] = self.snapshot_received.isoformat()
             view["snapshot_age"] = ("샘플 · 시각 고정" if self.sample else

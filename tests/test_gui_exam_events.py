@@ -97,7 +97,8 @@ class SubscriptionTests(unittest.TestCase):
                 client = ExamEventClient('localhost', 0, object(), 'test-admin')
                 peer.settimeout(3)
                 registration = recv_message(peer)
-                self.assertEqual(registration, dict(type='REGISTER', role='admin', token='test-admin', subscribe_exam=True))
+                self.assertEqual(registration, dict(type='REGISTER', role='admin', token='test-admin',
+                                                    subscribe_exam=True, subscribe_status=True))
                 send_message(peer, dict(type='REGISTER_RESULT', ok=True))
                 self.assertEqual(recv_message(peer), {'type': 'LIST_DEVICES'})
                 for index in range(80):
