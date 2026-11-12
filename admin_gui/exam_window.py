@@ -73,8 +73,7 @@ class ExamWindow:
         ttk.Label(actions, text='각 행의 PC만 제어 · 위 시험 ID/금지 목록/검사 간격 적용').grid(
             row=0, column=0, columnspan=5, sticky='w', pady=(0, 4))
         for row, pc_id in enumerate(('PC-01', 'PC-02', 'PC-03'), start=1):
-            ttk.Radiobutton(actions, text=pc_id, variable=self.pc_choice, value=pc_id,
-                            command=self.sync_devices).grid(row=row, column=0, sticky='w', padx=(0, 8))
+            ttk.Label(actions, text=pc_id).grid(row=row, column=0, sticky='w', padx=(0, 8))
             state = tk.StringVar(value='상태 미확인')
             ttk.Label(actions, textvariable=state).grid(row=row, column=1, sticky='w', padx=8)
             controls = {'state': state}
