@@ -54,12 +54,8 @@ class Dashboard:
         self.event_status = tk.StringVar(value="초기 전체 목록 대기")
         ctk.CTkLabel(root, textvariable=self.event_status).pack()
         self.exam_stream = tk.StringVar(value="시험 이벤트: TLS 관리자 연결 필요" if not sample else "샘플 · 시험 이벤트 연결 없음")
-        ttk.Label(root, textvariable=self.exam_stream).pack()
         self.exam_warning = tk.StringVar(value="금지 프로그램 감지 이력 없음 · 감시 정상/시험 준수를 뜻하지 않음")
-        ttk.Label(root, textvariable=self.exam_warning, foreground="#b91c1c", wraplength=1050).pack(padx=15)
         self.foreground_warning = tk.StringVar(value="Chrome 이탈·복귀 감지 이력 없음 · 활성 창 감시 상태는 선택 PC 상세에서 확인")
-        self.foreground_notice = ttk.Label(root, textvariable=self.foreground_warning, foreground="#64748b", wraplength=1050)
-        self.foreground_notice.pack(padx=15)
         columns = ("name", "state", "cpu", "ram", "up", "down", "rtt", "time")
         self.table = ttk.Treeview(root, columns=columns, show="headings", height=5)
         for col, title in zip(columns, ("PC 이름 / ID", "상태", "CPU %", "RAM %", "업로드 Mbps", "다운로드 Mbps", "서버 RTT(ms)", "측정 시각 UTC")):
@@ -291,10 +287,8 @@ class Dashboard:
             process = event['process']
             self.foreground_warning.set(f"{label} 감지 이력 · PC {event['pc_id']} · 시험 {event['exam_id']} · "
                 f"{event['previous_process']['name']} → {process['name']} (PID {process['pid']}) · {event['timestamp']}")
-            self.foreground_notice.configure(foreground='#b91c1c' if event['transition'] == 'left' else '#047857')
         else:
             self.foreground_warning.set('표시할 Chrome 이탈·복귀 이력 없음 · 활성 창 감시 상태는 선택 PC 상세에서 확인')
-            self.foreground_notice.configure(foreground='#64748b')
 
     def show_detail(self, event=None):
         selection = self.table.selection()

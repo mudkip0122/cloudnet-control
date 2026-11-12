@@ -58,7 +58,8 @@ class ExamWindow:
         ttk.Label(self.window, textvariable=self.foreground_text).pack(padx=12, pady=4)
         ttk.Label(self.window, textvariable=dashboard.exam_stream, wraplength=1000).pack(padx=12)
         ttk.Label(self.window, textvariable=dashboard.exam_warning, foreground="#b91c1c", wraplength=1000).pack(padx=12, pady=4)
-        ttk.Label(self.window, textvariable=dashboard.foreground_warning, wraplength=1000).pack(padx=12, pady=4)
+        self.foreground_notice = ttk.Label(self.window, textvariable=dashboard.foreground_warning, wraplength=1000)
+        self.foreground_notice.pack(padx=12, pady=4)
         self.inputs = []
         for title, default in (("시험 ID", ""), ("금지 실행 파일 (쉼표 구분 · 비우면 기본 목록, 입력하면 대체)", ""), ("검사 간격 (초)", "1")):
             ttk.Label(self.window, text=title).pack(anchor="w", padx=12)
@@ -176,6 +177,9 @@ class ExamWindow:
 
     def refresh_history(self):
         store = self.dashboard.exam_store
+        latest = store.latest_foreground
+        color = '#64748b' if latest is None else '#b91c1c' if latest['transition'] == 'left' else '#047857'
+        self.foreground_notice.configure(foreground=color)
         self.monitor_text.set("현재 시험 상태: " + store.state(self.display_pc_id, self.dashboard.connected))
         self.foreground_text.set('Chrome 활성 창 감시: ' + store.foreground_state(self.display_pc_id, self.dashboard.connected))
         if self.history_revision == store.revision:
