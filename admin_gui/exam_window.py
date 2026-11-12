@@ -70,7 +70,12 @@ class ExamWindow:
             button.pack(side='left', padx=4)
             self.buttons.append(button)
         ttk.Label(self.window, textvariable=self.status, wraplength=520).pack(padx=12, pady=10)
-        ttk.Label(self.window, text="프로그램 이름·활성 창 전환 감지 · 브라우저 탭/URL 감시·자동 차단 없음 · 공백 전후 이탈 시간 계산 안 함").pack(padx=12, pady=8)
+        ttk.Label(self.window, text=(
+            "일반 앱은 표시된 창 기준(최소화·트레이 제외), 원격제어 앱은 백그라운드 포함\n"
+            "숨김·최소화 후 복원하면 같은 PID도 재감지 가능 · partial: 창·프로세스 일부 확인 불가\n"
+            "미분류 사용자 지정 앱은 모든 실행 인스턴스 감지 · Chrome 이탈·복귀 감지 유지\n"
+            "탭/URL 감시·자동 차단 없음 · 공백 전후 이탈 시간 계산 안 함"),
+            wraplength=1000, justify="center").pack(padx=12, pady=8)
         ttk.Label(self.window, text="전체 PC 감지·감시 상태 이력 · 최근 500개 · 과거 감지는 현재 실행 여부나 부정행위 확정이 아님").pack(padx=12)
         container = ttk.Frame(self.window)
         container.pack(fill="both", expand=True, padx=12, pady=8)

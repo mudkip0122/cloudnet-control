@@ -38,6 +38,7 @@ class ExamStoreTests(unittest.TestCase):
         store.snapshot([dict(pc_id='PC-01', online=True)])
         store.accept(detection())
         self.assertIn('미확인', store.state('PC-01', True))
+
         store.status_update(dict(pc_id='PC-01', online=True, exam_mode=mode()))
         self.assertIn('검사 시작 중', store.state('PC-01', True))
         store.status_update(dict(pc_id='PC-01', online=True, exam_mode=mode(False)))
@@ -47,6 +48,16 @@ class ExamStoreTests(unittest.TestCase):
         self.assertIn('연결 끊김', store.state('PC-01', True))
         store.status_update(dict(pc_id='PC-01', online=True, exam_mode=None))
         self.assertIn('미확인', store.state('PC-01', True))
+
+    def test_restored_same_pid_is_new_detection_when_event_id_changes(self):
+        store = ExamStore()
+        first, restored = detection('first-display'), detection('restored-display')
+        self.assertEqual(first['process'], restored['process'])
+        self.assertTrue(store.accept(first))
+        self.assertFalse(store.accept(first))
+        self.assertTrue(store.accept(restored))
+        self.assertFalse(store.accept(restored))
+        self.assertEqual([e['event_id'] for e in store.history], ['first-display', 'restored-display'])
 
     def test_monitor_status_and_pc_exam_isolation(self):
         store = ExamStore()
