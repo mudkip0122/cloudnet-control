@@ -10,6 +10,8 @@ from uuid import uuid4
 from common.protocol import recv_message, send_message
 from common.security import connect
 
+POWER_ACTIONS = {"SHUTDOWN_PC": "PC 종료", "REBOOT_PC": "PC 재부팅"}
+
 
 class ProcessProtocolError(ValueError):
     pass
@@ -136,6 +138,7 @@ class ProcessClient:
                 send_message(conn, request)
                 deadline = time.monotonic() + self.timeout
                 assembly = ProcessPages(request["command_id"], request["target_id"])
+                accepted = False
                 while not self.stop.is_set():
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
@@ -155,6 +158,22 @@ class ProcessClient:
                         if rows is None:
                             continue
                         return {"ok": True, "code": "PROCESS_LIST", "processes": rows}
+                    if request["action"] in POWER_ACTIONS:
+                        code = message.get("code")
+                        if not isinstance(code, str) or not code.strip() or len(code) > 128:
+                            raise ProcessProtocolError("전원 제어 결과 코드 오류")
+                        if code == "POWER_ACCEPTED" and message["ok"] and message.get("terminal") is False:
+                            if accepted:
+                                raise ProcessProtocolError("중복 전원 접수 응답")
+                            accepted = True
+                            self.results.put((request, message))
+                            deadline = max(deadline, time.monotonic() + 5)
+                            continue
+                        if (message.get("terminal") is False or message["ok"] and
+                                (message.get("terminal") is not True or code != (
+                                    "POWER_SIMULATED" if request["power_control_mode"] == "simulate"
+                                    else "POWER_EXECUTION_STARTED"))):
+                            raise ProcessProtocolError("전원 제어 응답 오류")
                     return message
                 raise EOFError()
             finally:

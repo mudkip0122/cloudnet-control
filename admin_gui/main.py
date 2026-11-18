@@ -15,7 +15,10 @@ from admin_gui.presentation import device_view
 from admin_gui.charts import LiveCharts, MetricHistory
 from admin_gui.process_window import ProcessWindow
 from admin_gui.exam_window import ExamWindow
+from admin_gui.history_window import HistoryWindow
 from admin_gui.exam_events import ExamEventClient, ExamStore
+from admin_gui.power_control import PowerOperation, power_target
+from admin_gui.process_control import POWER_ACTIONS, ProcessClient
 
 
 class Dashboard:
@@ -38,11 +41,14 @@ class Dashboard:
         self.snapshot_received = None
         self.process_window = None
         self.exam_window = None
+        self.history_window = None
         self.exam_store = ExamStore()
         self.exam_client = None
         self.exam_generation = 0
         self.exam_stream_connected = False
         self.exam_gap = False
+        self.power_client = None
+        self.power_operations = {}
         root.title("CloudNet Control — " + ("SAMPLE DATA / OFFLINE" if sample else "PC 모니터링"))
         root.geometry("1100x940")
         root.minsize(950, 900)
@@ -83,9 +89,9 @@ class Dashboard:
         actions = ttk.Frame(detail, padding=(4, 4))
         actions.grid(row=0, column=2, rowspan=11, sticky="ne", padx=16, pady=4)
         self.preview_buttons = []
-        for row, action in enumerate(("PC 종료", "PC 재부팅")):
-            button = ttk.Button(actions, text=action,
-                                command=lambda action=action: self.preview_command(action))
+        for row, (action, label) in enumerate(POWER_ACTIONS.items()):
+            button = ttk.Button(actions, text=label, state="disabled",
+                                command=lambda action=action: self.confirm_power(action))
             button.grid(row=0, column=row, sticky="ew", padx=4, pady=4)
             self.preview_buttons.append(button)
         self.process_button = ttk.Button(actions, text="프로세스 목록", command=self.open_processes,
@@ -93,7 +99,11 @@ class Dashboard:
         self.process_button.grid(row=1, column=0, sticky="ew", padx=4, pady=4)
         self.exam_button = ttk.Button(actions, text="시험 모드", command=self.open_exam, state="disabled")
         self.exam_button.grid(row=1, column=1, sticky="ew", padx=4, pady=4)
-        ttk.Label(actions, text="PC 종료·재부팅: 확인창 미리보기", foreground="#64748b").grid(
+        self.history_button = ttk.Button(actions, text="이력·경고", command=self.open_history,
+                                         state="normal" if sample or context is not None and token else "disabled")
+        self.history_button.grid(row=4, column=0, columnspan=2, sticky="ew", padx=4, pady=4)
+        self.power_status = tk.StringVar()
+        ttk.Label(actions, textvariable=self.power_status, wraplength=264, foreground="#64748b").grid(
             row=2, column=0, columnspan=2, sticky="w", padx=4, pady=(10, 4))
         self.process_hint = tk.StringVar()
         ttk.Label(actions, textvariable=self.process_hint, wraplength=264, foreground="#64748b").grid(
@@ -199,7 +209,8 @@ class Dashboard:
             self.connected = connected
             if not connected:
                 self.history.disconnect()
-                self.exam_store.invalidate()
+                if not self.exam_stream_connected:
+                    self.exam_store.invalidate()
                 self.connection_state = "error"
                 self.status.set(data)
                 if self.context:
@@ -220,11 +231,16 @@ class Dashboard:
                 self.event_status.set("샘플 목록 · 행을 선택해 정상·데이터 없음·오프라인 예시를 확인하세요"
                                       if self.sample else " · ".join(changes) if changes else "전체 목록 동기화 완료")
                 self.devices = {device["pc_id"]: device for device in data}
+                if self.history_window is not None and not self.history_window.closed:
+                    self.history_window.set_choices(self.devices)
                 self.history.update(self.devices)
-                self.exam_store.snapshot(data)
+                if not self.exam_stream_connected:
+                    self.exam_store.snapshot(data, track_connections=False)
+                    self.observe_power_devices(data)
         except queue.Empty:
             pass
         self.drain_exam_events()
+        self.drain_power_results()
         self.update_connection_details()
         # Re-evaluate freshness even while no new server response arrives.
         for pc_id in self.table.get_children():
@@ -252,6 +268,7 @@ class Dashboard:
             if generation > 1 or self.exam_generation and not connected:
                 self.exam_gap = True
                 self.exam_store.foreground.clear()
+                self.exam_store.chrome_stream_gap()
             self.exam_store.foreground_stream_connected = connected
             self.exam_generation, self.exam_stream_connected = generation, connected
             self.exam_stream.set("시험 이벤트: " + label + (" · 이전 수신 공백 가능" if self.exam_gap else ""))
@@ -266,11 +283,13 @@ class Dashboard:
             kind = message.get('type')
             if kind == 'EXAM_EVENT':
                 self.exam_store.accept(message, apply_current=generation == self.exam_generation and self.exam_stream_connected)
-            elif generation == self.exam_generation and self.exam_stream_connected and self.connected:
+            elif generation == self.exam_generation and self.exam_stream_connected:
                 if kind == 'DEVICE_LIST':
                     self.exam_store.snapshot(message['devices'])
+                    self.observe_power_devices(message['devices'])
                 elif kind == 'STATUS_UPDATE':
                     self.exam_store.status_update(message['device'])
+                    self.observe_power_devices([message['device']])
         self.update_exam_warnings()
 
     def update_exam_warnings(self):
@@ -321,17 +340,32 @@ class Dashboard:
         available = (not self.sample and self.context is not None and bool(self.token)
                      and self.connected and device and view.get("state") == "온라인")
         self.process_button.configure(state="normal" if available else "disabled")
+        target = self.current_power_target(device)
+        operation = self.power_operations.get(device["pc_id"]) if device else None
         for button in self.preview_buttons:
-            button.configure(state="normal" if device and view.get("state") == "온라인" else "disabled")
-        can_view_exam = not self.sample and self.context is not None and bool(self.token) and bool(device or self.exam_store.history)
+            button.configure(state="normal" if target and not (operation and operation.busy) else "disabled")
+        self.power_status.set(
+            f"{POWER_ACTIONS[operation.request['action']]} · {operation.label()}" if operation else
+            "전원 제어 · " + ("모의 실행" if target[0] == "simulate" else "실제 실행") if target else
+            "전원 제어 · 지원되는 온라인 PC 필요")
+        can_view_exam = self.sample or (self.context is not None and bool(self.token)
+                                       and bool(device or self.exam_store.history))
         self.exam_button.configure(state="normal" if can_view_exam else "disabled")
         if self.process_window is not None and not self.process_window.closed:
             self.process_window.set_target(device, self.connected and view.get("state") == "온라인")
         if self.exam_window is not None and not self.exam_window.closed:
             self.exam_window.sync_devices(preferred_id=device['pc_id'] if device else None)
 
+    def open_history(self):
+        if not self.sample and (self.context is None or not self.token):
+            return
+        if self.history_window is None or self.history_window.closed:
+            selection = self.table.selection()
+            self.history_window = HistoryWindow(self, selection[0] if selection else None)
+        self.history_window.window.lift()
+
     def open_exam(self):
-        if self.sample or self.context is None or not self.token:
+        if not self.sample and (self.context is None or not self.token):
             return
         if self.exam_window is None or self.exam_window.closed:
             self.exam_window = ExamWindow(self)
@@ -351,17 +385,69 @@ class Dashboard:
         self.process_window.set_target(device, self.connected)
         self.process_window.window.lift()
 
-    def preview_command(self, action):
+    def current_power_target(self, device):
+        if self.connected and (self.sample or self.context is not None and self.token):
+            if device and self.exam_stream_connected:
+                device = self.exam_store.devices.get(device["pc_id"], device)
+            return power_target(device, self.sample)
+        return None
+
+    def confirm_power(self, action):
         selection = self.table.selection()
         device = self.devices.get(selection[0]) if selection else None
-        if not device or not self.connected or not device.get("online"):
-            messagebox.showinfo("대상 확인", "연결된 PC 한 대를 선택하세요", parent=self.root)
+        target = self.current_power_target(device)
+        if not target:
             return
-        if messagebox.askokcancel("PC 작업 확인 (미연동)",
-                                 f"대상: {device['pc_name']}\n고유 ID: {device['pc_id']}\n작업: {action}\n"
-                                 "PC 제어 미연동 상태입니다. 실제 명령은 전송하지 않습니다.\n"
-                                 "확인 화면을 검토하시겠습니까?", parent=self.root):
-            messagebox.showinfo("확인창 검토 완료", "PC 제어 미연동 · 실제 종료·재부팅은 수행하지 않았습니다", parent=self.root)
+        pc_id = device["pc_id"]
+        existing = self.power_operations.get(pc_id)
+        if existing and existing.busy:
+            return
+        mode = "모의 실행" if target[0] == "simulate" else "실제 실행"
+        if not messagebox.askokcancel("PC 전원 작업 확인",
+                f"대상 PC  {device['pc_name']} ({pc_id})\n작업  {POWER_ACTIONS[action]}\n모드  {mode}",
+                parent=self.root):
+            return
+        if self.closed:
+            return
+        if (self.current_power_target(self.devices.get(pc_id)) != target
+                or self.power_operations.get(pc_id) is not existing):
+            messagebox.showinfo("대상 변경", "PC 연결 또는 전원 상태가 바뀌었습니다. 다시 확인해 주세요.",
+                                parent=self.root)
+            return
+        operation = PowerOperation.start(pc_id, action, target)
+        self.power_operations[pc_id] = operation
+        if self.sample:
+            self.root.after(300, operation.result, {"code": "POWER_ACCEPTED"})
+            self.root.after(900, operation.result, {"code": "POWER_SIMULATED"})
+        else:
+            if self.power_client is None:
+                self.power_client = ProcessClient(self.host, self.port, self.context, self.token,
+                                                  timeout=35, server_name=self.server_name)
+            self.power_client.submit(operation.request)
+        self.show_detail()
+
+    def observe_power_devices(self, devices):
+        now = datetime.now(timezone.utc)
+        for device in devices:
+            if isinstance(device, dict) and isinstance(device.get("pc_id"), str):
+                operation = self.power_operations.get(device["pc_id"])
+                if operation:
+                    operation.observe(device, now)
+
+    def drain_power_results(self):
+        if self.power_client is None:
+            return
+        while True:
+            try:
+                request, result = self.power_client.results.get_nowait()
+            except queue.Empty:
+                break
+            operation = self.power_operations.get(request["target_id"])
+            if operation and operation.request["command_id"] == request["command_id"]:
+                operation.result(result)
+        now = datetime.now(timezone.utc)
+        for operation in self.power_operations.values():
+            operation.observe(None, now)
 
     def close(self):
         if self.closed:
@@ -371,8 +457,12 @@ class Dashboard:
             self.process_window.close()
         if self.exam_window is not None:
             self.exam_window.close()
+        if self.history_window is not None and not self.history_window.closed:
+            self.history_window.close()
         if self.exam_client is not None:
             self.exam_client.close()
+        if self.power_client is not None:
+            self.power_client.close()
         self.stop.set()
         if self.sock is not None:
             try:
@@ -388,7 +478,8 @@ class Dashboard:
         if (self.worker.is_alive() or (process_client is not None and process_client.worker.is_alive())
                 or (exam_client is not None and exam_client.worker.is_alive())):
             self.root.after(50, self.finish_close)
-        elif self.exam_client is not None and self.exam_client.worker.is_alive():
+        elif any(client is not None and client.worker.is_alive()
+                 for client in (self.exam_client, self.power_client)):
             self.root.after(50, self.finish_close)
         else:
             self.worker.join()

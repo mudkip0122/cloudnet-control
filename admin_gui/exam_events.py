@@ -1,19 +1,26 @@
 """B v1 exam events on the agreed, separate TLS administrator subscription."""
 from collections import OrderedDict, deque
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timezone
 import queue
 import re
 import socket
 import ssl
 import threading
 import time
+from uuid import uuid4
 
 from common.protocol import recv_message, send_message
 from common.security import connect
 
 MONITOR_LABELS = {"starting": "검사 시작 중", "ok": "정상 검사", "partial": "일부 확인 불가",
                   "unavailable": "감시 불가", "off": "꺼짐"}
+CHROME_REASONS = {
+    "awaiting_extension": "확장 연결 대기", "extension_disconnected": "Chrome 확장 단절",
+    "local_store_unavailable": "로컬 이벤트 저장소 확인 불가", "event_buffer_overflow": "이벤트 일부 누락",
+}
+CAMERA_LABELS = {"on": "켜짐", "off": "꺼짐", "permission_denied": "권한 거부", "unavailable": "사용 불가"}
+CHROME_KINDS = ("EXAM_TAB_CHANGED", "EXAM_CAMERA_STATUS", "EXAM_TAB_MONITOR_STATUS")
 
 
 def timestamp(value):
@@ -22,6 +29,7 @@ def timestamp(value):
     stamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if stamp.tzinfo is None:
         raise ValueError("이벤트 시각에 시간대 필요")
+    return stamp.astimezone(timezone.utc)
 
 
 def valid_exam_id(value):
@@ -41,6 +49,23 @@ def process_identity(process):
 
 def event_columns(event):
     kind = event['kind']
+    if kind == 'EXAM_TAB_CHANGED':
+        label = {'left': '시험 탭 이탈', 'returned': '시험 탭 복귀', 'closed': '시험 탭 닫힘'}[event['transition']]
+        duration = event.get('away_seconds')
+        return label, f"이탈 {duration:.2f}초" if duration is not None else '—', '—'
+    if kind == 'EXAM_CAMERA_STATUS':
+        return '카메라 상태', CAMERA_LABELS[event['status']], '—'
+    if kind == 'EXAM_TAB_MONITOR_STATUS':
+        if event['status'] == 'monitoring':
+            return '탭 감시 시작/복구', 'Chrome 확장 연결', '—'
+        details = CHROME_REASONS[event['reason']]
+        if 'dropped_count' in event:
+            details += f" ({event['dropped_count']}건)"
+        return '탭 감시 공백', details, '—'
+    if kind == 'TIMELINE_BOUNDARY':
+        labels = {'agent_lost': 'Agent 단절', 'agent_restored': 'Agent 재등록',
+                  'stream_lost': '관리자 이벤트 수신 공백', 'exam_ended': '시험 관찰 종료'}
+        return labels[event['reason']], '—', '—'
     if kind == 'EXAM_WINDOW_CHANGED':
         before, after = event['previous_process'], event['process']
         return ('Chrome 이탈' if event['transition'] == 'left' else 'Chrome 복귀',
@@ -61,7 +86,32 @@ def exam_event(message):
         if not isinstance(message.get(key), str) or not message[key].strip() or len(message[key]) > 128:
             raise ValueError("시험 이벤트 식별 오류")
     timestamp(message.get("timestamp"))
-    if message.get("kind") == "FORBIDDEN_PROCESS_DETECTED":
+    kind = message.get('kind')
+    if kind in CHROME_KINDS:
+        fields = ('type', 'version', 'event_id', 'pc_id', 'exam_id', 'kind', 'timestamp')
+        if kind == 'EXAM_TAB_CHANGED':
+            if message.get('transition') not in ('left', 'returned', 'closed'):
+                raise ValueError('시험 탭 전환 오류')
+            fields += ('transition',)
+        elif kind == 'EXAM_CAMERA_STATUS':
+            if message.get('status') not in tuple(CAMERA_LABELS):
+                raise ValueError('카메라 상태 오류')
+            fields += ('status',)
+        else:
+            status, reason = message.get('status'), message.get('reason')
+            if ((status, reason) != ('monitoring', 'extension_connected')
+                    and not (status == 'unavailable' and reason in tuple(CHROME_REASONS))):
+                raise ValueError('시험 탭 감시 상태 오류')
+            count = message.get('dropped_count')
+            if reason == 'event_buffer_overflow':
+                if type(count) is not int or count <= 0:
+                    raise ValueError('누락 건수 오류')
+                fields += ('dropped_count',)
+            elif 'dropped_count' in message:
+                raise ValueError('누락 건수 오류')
+            fields += ('status', 'reason')
+        return {field: message[field] for field in fields}
+    if kind == "FORBIDDEN_PROCESS_DETECTED":
         process_identity(message.get('process'))
     elif message.get('kind') == 'EXAM_WINDOW_CHANGED':
         process_identity(message.get('process'))
@@ -115,10 +165,16 @@ class ExamStore:
         self.latest_foreground = None
         self.foreground = {}
         self.foreground_stream_connected = False
+        self.timeline_devices = {}
+        self.interrupted_exams = {}
+        self.chrome = {}
+        self.chrome_devices = set()
 
-    def snapshot(self, devices):
+    def snapshot(self, devices, track_connections=True):
         previous = self.devices
         self.devices = {d["pc_id"]: deepcopy(d) for d in devices if isinstance(d, dict) and isinstance(d.get("pc_id"), str)}
+        if track_connections:
+            self.track_timeline_devices(self.devices)
         for pc_id in tuple(self.foreground):
             device, old = self.devices.get(pc_id, {}), previous.get(pc_id, {})
             mode, old_mode = exam_mode(device.get('exam_mode')), exam_mode(old.get('exam_mode'))
@@ -143,6 +199,7 @@ class ExamStore:
     def invalidate(self):
         self.monitor.clear()
         self.foreground.clear()
+        self.chrome_stream_gap()
         for device in self.devices.values():
             device['exam_mode'] = None
 
@@ -154,12 +211,14 @@ class ExamStore:
         self.seen[key] = None
         if len(self.seen) > self.dedup_limit:
             self.seen.popitem(last=False)
-        self.history.append(event)
-        self.revision += 1
         device = self.devices.get(event['pc_id'], {})
         mode = exam_mode(device.get('exam_mode'))
         active = apply_current and device.get('online') and mode and mode['enabled'] and mode['exam_id'] == event['exam_id']
-        if event['kind'] in ('EXAM_WINDOW_CHANGED', 'FOREGROUND_MONITOR_STATUS'):
+        if event['kind'] in CHROME_KINDS:
+            if active:
+                self.chrome_devices.add(event['pc_id'])
+                self.apply_chrome_event(event)
+        elif event['kind'] in ('EXAM_WINDOW_CHANGED', 'FOREGROUND_MONITOR_STATUS'):
             if event['kind'] == 'EXAM_WINDOW_CHANGED':
                 self.latest_foreground = event
             if active and self.foreground_stream_connected:
@@ -169,7 +228,90 @@ class ExamStore:
         else:
             if active:
                 self.monitor[event['pc_id']] = event
+        self.history.append(event)
+        self.revision += 1
         return True
+
+    def timeline_boundary(self, pc_id, exam_id, reason, received=None):
+        try:
+            timestamp(received)
+        except (ValueError, OverflowError):
+            received = datetime.now(timezone.utc).isoformat()
+        self.history.append(dict(kind='TIMELINE_BOUNDARY', event_id=str(uuid4()), pc_id=pc_id,
+                                 exam_id=exam_id, reason=reason, timestamp=received,
+                                 status='monitoring' if reason == 'agent_restored' else 'unavailable'))
+        self.revision += 1
+        self.chrome.pop(pc_id, None)
+
+    def track_timeline_devices(self, devices):
+        previous = self.timeline_devices
+        self.timeline_devices = devices
+        for pc_id in (previous.keys() | devices.keys()) & self.chrome_devices:
+            old, current = previous.get(pc_id, {}), devices.get(pc_id, {})
+            before, after = exam_mode(old.get('exam_mode')), exam_mode(current.get('exam_mode'))
+            received = current.get('server_timestamp')
+            if old.get('online') and before and before['enabled']:
+                if not current.get('online') or current.get('agent_session_id') != old.get('agent_session_id'):
+                    self.interrupted_exams[pc_id] = before['exam_id']
+                    self.timeline_boundary(pc_id, before['exam_id'], 'agent_lost', received)
+                elif (not after or not after['enabled'] or after['exam_id'] != before['exam_id']
+                      or after['monitor_status'] == 'starting' and
+                      current.get('exam_state_received_at') != old.get('exam_state_received_at')):
+                    self.timeline_boundary(pc_id, before['exam_id'], 'exam_ended', received)
+            if current.get('online') and pc_id in self.interrupted_exams:
+                self.timeline_boundary(pc_id, self.interrupted_exams.pop(pc_id), 'agent_restored', received)
+
+    def chrome_stream_gap(self):
+        for pc_id, device in self.timeline_devices.items():
+            mode = exam_mode(device.get('exam_mode'))
+            if pc_id in self.chrome_devices and device.get('online') and mode and mode['enabled']:
+                self.timeline_boundary(pc_id, mode['exam_id'], 'stream_lost')
+        self.chrome.clear()
+        self.timeline_devices = {}
+
+    def apply_chrome_event(self, event):
+        pc_id, kind = event['pc_id'], event['kind']
+        state = self.chrome.setdefault(pc_id, {})
+        observed = timestamp(event['timestamp'])
+        # Delayed records remain in history. They cannot reopen an older observation.
+        if state.get('observed', observed) > observed and kind != 'EXAM_TAB_MONITOR_STATUS':
+            state.pop('left', None)
+            return
+        state['observed'] = max(observed, state.get('observed', observed))
+        if kind == 'EXAM_TAB_MONITOR_STATUS':
+            if event['status'] == 'unavailable':
+                state.update(monitoring=False, camera=None, left=None)
+                # Overflow is reported after draining the batch and carries no gap start time.
+                for row in reversed(self.history):
+                    if row['pc_id'] != pc_id or row['exam_id'] != event['exam_id']:
+                        continue
+                    if row['kind'] == 'TIMELINE_BOUNDARY':
+                        break
+                    duration = row.get('away_seconds')
+                    if duration is not None and (event['reason'] == 'event_buffer_overflow'
+                                                  or 0 <= (timestamp(row['timestamp']) - observed).total_seconds()
+                                                  <= duration):
+                        row.pop('away_seconds', None)
+            else:
+                state.update(monitoring=True, camera=None, left=None)
+        elif kind == 'EXAM_CAMERA_STATUS':
+            state['camera'] = event['status']
+        elif event['transition'] == 'left':
+            if state.get('monitoring'):
+                state['left'] = observed
+        else:
+            left = state.pop('left', None)
+            if event['transition'] == 'returned' and left is not None:
+                event['away_seconds'] = (observed - left).total_seconds()
+            elif event['transition'] == 'closed':
+                state['camera'] = None
+
+    def camera_state(self, pc_id):
+        device = self.devices.get(pc_id, {})
+        mode = exam_mode(device.get('exam_mode'))
+        if not device.get('online') or not mode or not mode['enabled']:
+            return '관찰 중지' if mode and not mode['enabled'] else '미확인'
+        return CAMERA_LABELS.get(self.chrome.get(pc_id, {}).get('camera'), '미확인')
 
     def remove_history(self, event_ids):
         """Remove local display records, retaining dedup and current monitoring state."""

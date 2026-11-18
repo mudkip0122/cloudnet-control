@@ -66,6 +66,8 @@ B의 문서·구현에서 CPU·RAM %, 네트워크 Mbps, 기본 수집 2초가 �
 
 ### 4주 차: 이력·ERD·경고
 
+[C 구현 및 A 검토용 ERD·이력 조회·경고 초안](../c-week4-history-draft.md)
+
 - [ ] `devices`, `metrics`, `events`, `commands` ERD와 조회 필드 초안을 A와 작성
 - [ ] 최근 10분·1시간 이력 조회 조건과 서버 응답 규격 합의
 - [ ] TCP/TLS로 이력 요청 후 그래프·표 표시; 조회 중·결과 없음·실패 상태 처리

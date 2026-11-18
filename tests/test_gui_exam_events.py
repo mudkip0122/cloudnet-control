@@ -1,5 +1,5 @@
 """C subscription contract tests. Socket peers simulate the agreed A transport."""
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import socket
 import time
 import unittest
@@ -22,6 +22,38 @@ def mode(enabled=True):
 
 
 class ExamStoreTests(unittest.TestCase):
+    def test_chrome_timeline_resets_duration_and_camera_on_both_gaps(self):
+        store = ExamStore()
+        base = datetime.now(timezone.utc)
+        device = dict(pc_id='PC-01', online=True, exam_mode=mode(), agent_session_id='first')
+        store.snapshot([device])
+
+        def event(second, kind, **fields):
+            store.accept(dict(type='EXAM_EVENT', version=1, pc_id='PC-01', exam_id='exam-1',
+                              timestamp=(base + timedelta(seconds=second)).isoformat(),
+                              event_id=str(second), kind=kind, **fields))
+            return store.history[-1]
+
+        monitor = 'EXAM_TAB_MONITOR_STATUS'
+        tab = 'EXAM_TAB_CHANGED'
+        event(0, monitor, status='monitoring', reason='extension_connected')
+        camera = event(1, 'EXAM_CAMERA_STATUS', status='on', url='private')
+        self.assertNotIn('url', camera)
+        event(2, tab, transition='left')
+        self.assertEqual(event(4, tab, transition='returned')['away_seconds'], 2)
+        event(5, tab, transition='left')
+        event(6, monitor, status='unavailable', reason='extension_disconnected')
+        event(7, monitor, status='monitoring', reason='extension_connected')
+        self.assertIsNone(store.chrome['PC-01']['camera'])
+        self.assertNotIn('away_seconds', event(8, tab, transition='returned'))
+        event(9, tab, transition='left')
+        store.status_update(dict(device, online=False, exam_mode=None))
+        store.status_update(dict(device, agent_session_id='second'))
+        event(10, monitor, status='monitoring', reason='extension_connected')
+        self.assertNotIn('away_seconds', event(11, tab, transition='returned'))
+        self.assertEqual([row['reason'] for row in store.history if row['kind'] == 'TIMELINE_BOUNDARY'],
+                         ['agent_lost', 'agent_restored'])
+
     def test_local_history_removal_preserves_state_and_dedup(self):
         store = ExamStore()
         store.snapshot([dict(pc_id='PC-01', online=True, exam_mode=mode())])

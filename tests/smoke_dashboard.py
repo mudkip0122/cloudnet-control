@@ -1,6 +1,8 @@
 """C's deterministic three-PC widget check; uses labelled synthetic data."""
+from concurrent.futures import Future
 from datetime import datetime, timedelta, timezone
 import tkinter as tk
+import time
 import customtkinter as ctk
 from unittest.mock import patch
 
@@ -60,17 +62,13 @@ def main():
         assert not dashboard.table.get_children()
         assert dashboard.details["name"].get() == "—"
         assert not dashboard.charts.points
-        with patch("admin_gui.main.messagebox.showinfo") as info, \
-                patch("admin_gui.main.messagebox.askokcancel", return_value=False) as confirm:
-            dashboard.preview_command("종료")
-            info.assert_called_once()
+        with patch("admin_gui.main.messagebox.askokcancel") as confirm:
+            dashboard.confirm_power("SHUTDOWN_PC")
             confirm.assert_not_called()
             refresh(True, devices)
             dashboard.table.selection_set("sample-1")
-            dashboard.preview_command("재부팅")
-            confirm.assert_called_once()
-            assert "sample-1" in confirm.call_args.args[1]
-            assert "재부팅" in confirm.call_args.args[1]
+            dashboard.confirm_power("REBOOT_PC")
+            confirm.assert_not_called()
         dashboard.context, dashboard.token = object(), "sample-admin-token"
         refresh(True, devices)
         assert "관리자 인증: 성공" in dashboard.connection_details.get()
@@ -104,6 +102,57 @@ def sample_checks():
                 dashboard.show_detail()
                 assert dashboard.details["state"].get() == expected
             assert dashboard.process_button.instate(["disabled"])
+            dashboard.table.selection_set("sample-pc-01")
+            dashboard.show_detail()
+            assert dashboard.preview_buttons[1].instate(["!disabled"])
+            with patch("admin_gui.main.messagebox.askokcancel", return_value=True) as confirm:
+                dashboard.confirm_power("REBOOT_PC")
+            assert all(value in confirm.call_args.args[1] for value in ("sample-pc-01", "재부팅", "모의 실행"))
+            deadline = time.monotonic() + 3
+            while "모의 실행 완료" not in dashboard.power_status.get() and time.monotonic() < deadline:
+                root.update()
+                time.sleep(.02)
+            assert "요청 접수 → 모의 실행 완료" in dashboard.power_status.get()
+            dashboard.open_exam()
+            window = dashboard.exam_window
+            rows = [window.history_table.item(iid, "values") for iid in window.history_table.get_children()]
+            assert rows[0][2] == "시험 탭 닫힘"
+            assert any(row[2:4] == ("탭 감시 공백", "Chrome 확장 단절") for row in rows)
+            assert any(row[2:4] == ("시험 탭 복귀", "이탈 3.00초") for row in rows)
+            dashboard.open_history()
+            history = dashboard.history_window
+            deadline = time.monotonic() + 3
+            while history.future is not None and time.monotonic() < deadline:
+                root.update()
+                time.sleep(.02)
+            assert history.chart.points
+            assert len(history.alerts.get_children()) == 4
+            alert_states = [history.alerts.item(iid, "values")[2] for iid in history.alerts.get_children()]
+            assert alert_states.count("정상 복귀") == 2
+
+            old, current = Future(), Future()
+            old.set_running_or_notify_cancel()
+            with patch.object(history.executor, "submit", side_effect=[old, current]):
+                history.submit()
+                history.range.current(1)
+                history.submit()
+            old.set_result(([], [(dashboard.sample_now, "CPU_HIGH", "raised")]))
+            history.window.after_cancel(history.timer)
+            history.tick()
+            assert history.status.get() == "조회 중…"
+            assert not history.alerts.get_children()
+            current.set_result(([], []))
+            history.window.after_cancel(history.timer)
+            history.tick()
+            assert history.status.get() == "조회 결과 없음"
+            failed = Future()
+            failed.set_exception(TimeoutError())
+            with patch.object(history.executor, "submit", return_value=failed):
+                history.submit()
+            history.window.after_cancel(history.timer)
+            history.tick()
+            assert history.status.get().startswith("조회 실패")
+            assert not history.chart.points
             receive.assert_not_called()
             connect.assert_not_called()
             print("PASS: shared sample layout, explicit sample mode, three states, no network")

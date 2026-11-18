@@ -6,7 +6,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 from admin_gui.process_control import ProcessClient, command_request
-from admin_gui.exam_events import MONITOR_LABELS, exam_mode, event_columns
+from admin_gui.exam_events import MONITOR_LABELS, exam_mode, event_columns, timestamp
 from admin_gui.presentation import device_view
 
 
@@ -60,6 +60,8 @@ class ExamWindow:
         ttk.Button(header, text='도움말', command=self.show_help).pack(side='right')
         self.foreground_text = tk.StringVar(value='활성 창 감시 미확인')
         ttk.Label(self.window, textvariable=self.foreground_text).pack(padx=12, pady=4)
+        self.camera_text = tk.StringVar()
+        ttk.Label(self.window, textvariable=self.camera_text).pack(padx=12)
         self.inputs = []
         for title, default in (("시험 ID", ""), ("금지 프로그램 (비우면 기본 목록)", ""), ("검사 간격 (초)", "1")):
             ttk.Label(self.window, text=title).pack(anchor="w", padx=12)
@@ -83,7 +85,7 @@ class ExamWindow:
                 self.buttons.append(button)
             self.pc_controls[pc_id] = controls
         ttk.Label(self.window, textvariable=self.status, wraplength=520).pack(padx=12, pady=10)
-        ttk.Label(self.window, text="감지 내역 · 전체 PC · 최신순").pack(anchor='w', padx=12)
+        ttk.Label(self.window, text="시험 타임라인 · 전체 PC · 최신순").pack(anchor='w', padx=12)
         history_actions = ttk.Frame(self.window)
         history_actions.pack(fill='x', padx=12, pady=(4, 0))
         self.delete_selected_button = ttk.Button(history_actions, text='선택 내역 지우기',
@@ -132,9 +134,9 @@ class ExamWindow:
     def sync_devices(self, preferred_id=None, force_selection=False, request_status=True):
         # Monitor selection initializes this window; later monitor ticks must not
         # override the PC explicitly chosen inside the exam window.
-        if force_selection and preferred_id in self.pc_controls:
+        if force_selection and (preferred_id in self.pc_controls or self.dashboard.sample and preferred_id):
             self.pc_choice.set(preferred_id)
-        if self.pc_choice.get() not in self.pc_controls:
+        if not self.dashboard.sample and self.pc_choice.get() not in self.pc_controls:
             choices = [pc for pc in self.pc_controls if pc in self.dashboard.devices]
             self.pc_choice.set(preferred_id if preferred_id in self.pc_controls else (choices[0] if choices else 'PC-01'))
         pc_id = self.pc_choice.get()
@@ -182,11 +184,13 @@ class ExamWindow:
     def refresh_history(self):
         store = self.dashboard.exam_store
         connected = self.dashboard.exam_stream_connected
-        self.connection_text.set(('연결됨' if connected else '연결 끊김' if self.dashboard.exam_generation else '연결 확인 중')
+        self.connection_text.set(('샘플 이벤트' if self.dashboard.sample else
+                                  '연결됨' if connected else '연결 끊김' if self.dashboard.exam_generation else '연결 확인 중')
                                  + (' · 수신 공백 있음' if self.dashboard.exam_gap else ''))
         self.connection_label.configure(foreground='#64748b' if connected else '#b45309')
         self.monitor_text.set("현재 시험 상태: " + store.state(self.display_pc_id, self.dashboard.connected))
         self.foreground_text.set(f"{self.display_pc_id or 'PC'} · " + store.foreground_state(self.display_pc_id, self.dashboard.connected))
+        self.camera_text.set(f"{self.display_pc_id or 'PC'} · 카메라 {store.camera_state(self.display_pc_id)}")
         if self.history_revision == store.revision:
             return
         self.history_revision = store.revision
@@ -194,7 +198,7 @@ class ExamWindow:
         position = self.history_table.yview()[0]
         for item in self.history_table.get_children():
             self.history_table.delete(item)
-        for event in reversed(store.history):
+        for event in sorted(reversed(store.history), key=lambda row: timestamp(row['timestamp']), reverse=True):
             kind, name, pid = event_columns(event)
             tag = ('warning' if event['kind'] == 'FORBIDDEN_PROCESS_DETECTED' or event.get('transition') == 'left'
                    else 'returned' if event.get('transition') == 'returned'
