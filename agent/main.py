@@ -78,6 +78,10 @@ def register(conn, args):
     args.session_rtt_enabled = (response.get("rtt_v1") is True
                                 and getattr(args, "rtt_interval", 5) != 0)
     args.session_foreground_enabled = response.get("exam_foreground_v1") is True
+    args.session_chrome_timeline_enabled = (response.get("exam_events_v1") is True
+                                            and response.get("exam_chrome_timeline_v1") is True
+                                            and bool(getattr(args, "token", None))
+                                            and isinstance(conn, ssl.SSLSocket))
     args.session_power_enabled = response.get("power_control_v1") is True
     if power is not None and power.mode != "off" and not args.session_power_enabled:
         LOG.warning("Remote power control is unsupported by the server")
@@ -100,6 +104,7 @@ def stream(conn, args):
     exam_commands = getattr(args, "exam_commands", None) or ExamCommands(args.pc_id)
     power_commands = getattr(args, "power_commands", None) or PowerCommands(args.pc_id)
     chrome_tabs = ChromeTabMonitor(args.pc_id) if getattr(args, "watch_chrome_tabs", False) else None
+    chrome_timeline = getattr(args, "session_chrome_timeline_enabled", False)
     exam_commands.foreground_enabled = getattr(args, "session_foreground_enabled", False)
     initial_monitor = (ExamMonitor(args.pc_id, args.exam_id, args.forbid_process, args.exam_poll_interval,
                                   foreground_enabled=exam_commands.foreground_enabled)
@@ -189,7 +194,7 @@ def stream(conn, args):
                     exam_commands.poll(send)
                 else:
                     with exam_commands.lock:
-                        chrome_tabs.poll(exam_commands.monitor)
+                        chrome_tabs.poll(exam_commands.monitor, send if chrome_timeline else None)
                         exam_commands.poll(send)
                 if failed.wait(.1):
                     return

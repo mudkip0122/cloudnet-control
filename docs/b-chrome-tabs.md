@@ -31,4 +31,23 @@
 - 카메라 확인은 시험 전 `WAIT` 상태에서 미리보기가 뜨는지, 시험을 켰을 때 권한 허용 후 영상이 이 PC에서 보이는지, 시험을 껐을 때 카메라 창과 Chrome의 카메라 사용 표시가 사라지는지 확인합니다. `WAIT` 중에는 카메라 창이 열리지 않아야 합니다.
 - 자동 검증은 `python -m unittest tests.test_chrome_tabs` 및 `node --test tests/test_chrome_extension.cjs tests/test_chrome_camera.cjs`입니다.
 
-Agent는 현재 시험의 이벤트를 로컬 로그에 남깁니다. A 서버·공통 프로토콜·C GUI로 탭 전환을 보내려면 후속 연동이 필요합니다.
+## 시험 타임라인 연동
+
+Agent는 시험 이벤트를 로컬 로그에 남깁니다. 새 이벤트를 수신할 준비가 된 A 서버는 인증된 TLS 연결의 `REGISTER_RESULT`에 `exam_events_v1: true`와 `exam_chrome_timeline_v1: true`를 모두 보냅니다. B는 두 플래그를 연결마다 다시 확인하고, `--watch-chrome-tabs`가 활성화된 시험에서만 전송합니다. 기존 서버에서는 로컬 로그를 계속 사용합니다.
+
+세 종류 모두 `EXAM_EVENT` 버전 `1`이며, 공통 필드는 `type`, `version`, `event_id`, `pc_id`, `exam_id`, `kind`, UTC `timestamp`입니다. 탭·카메라·확장 연결 전환에는 Agent가 읽어 들인 시각 대신 로컬 브리지에 기록된 발생 시각을 사용합니다.
+
+| `kind` | 추가 필드 | 값 |
+|---|---|---|
+| `EXAM_TAB_CHANGED` | `transition` | `left`, `returned`, `closed` |
+| `EXAM_CAMERA_STATUS` | `status` | `on`, `off`, `permission_denied`, `unavailable` |
+| `EXAM_TAB_MONITOR_STATUS` | `status`, `reason`, 조건부 `dropped_count` | `monitoring`은 `extension_connected`. `unavailable`은 `awaiting_extension`, `extension_disconnected`, `local_store_unavailable`, `event_buffer_overflow`. `dropped_count`는 `event_buffer_overflow`일 때만 포함하는 양의 정수입니다. |
+
+```json
+{"type":"EXAM_EVENT","version":1,"event_id":"b8cb9b27-44de-4919-b4ec-b0a5cd7df253","pc_id":"PC-02","exam_id":"trial-1","timestamp":"2026-11-18T12:30:00.250000Z","kind":"EXAM_TAB_CHANGED","transition":"left"}
+```
+
+- A는 세 종류를 검증하고 기존 `event_id` 중복 제거·SQLite 저장·관리자 구독 중계에 연결합니다. Agent 연결 단절·재접속은 A의 접속 상태 타임라인을 사용합니다. 같은 시험 ID를 다시 쓸 경우 시험 시작 기록과 Agent 접속 세션으로 관찰 구간을 구분합니다.
+- C는 `EXAM_TAB_MONITOR_STATUS`의 `unavailable`을 확장 감시 공백으로 표시하고, 그 경계를 넘겨 탭 이탈 시간을 계산하지 않습니다. `event_buffer_overflow`는 직전 수집 구간에 일부 기록이 누락됐다는 뜻입니다. 확장 연결이 복구되더라도 새 카메라 상태가 오기 전까지는 카메라 상태를 미확인으로 표시합니다.
+- `EXAM_CAMERA_STATUS`의 `off`는 확장에서 확인한 상태입니다. 시험 종료나 연결 해제 시점에는 마지막 `on`을 그대로 유지하지 않고 해당 시험의 관찰을 종료합니다. 영상·음성·URL·제목·탭 ID는 전달하지 않습니다.
+- 연결이 끊겨 전송하지 못한 시험 이벤트는 다음 연결로 재전송하지 않습니다. 실서버 검증을 시작하기 전에 A의 새 이벤트 검증과 구독 중계가 준비되어야 합니다.
