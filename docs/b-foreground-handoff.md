@@ -1,5 +1,7 @@
 # B: Chrome 활성 창 이탈 감지 인계
 
+같은 Chrome 창의 시험 탭 전환은 [B Chrome 시험 탭 확장](b-chrome-tabs.md)이 처리합니다. 아래 내용은 기존 Windows 전경 프로세스 감지 기준입니다.
+
 ## 구현 상태
 
 B Agent만 변경했습니다. A 서버·공통 프로토콜·C GUI는 수정하지 않았습니다.

@@ -12,8 +12,10 @@ import threading
 import time
 
 from agent.identity import DEFAULT_ID_FILE, resolve_id
+from agent.chrome_tabs import ChromeTabMonitor
 from agent.exam import ExamMonitor
 from agent.exam_commands import EXAM_ACTIONS, ExamCommands
+from agent.power_commands import POWER_ACTIONS, PowerCommands, read_boot_id
 from agent.process_commands import ProcessCommands
 from agent.rtt import RttTracker, validate_rtt_settings
 from common.protocol import recv_message, send_message
@@ -57,6 +59,12 @@ def retry_delay(failures):
 
 def register(conn, args):
     message = {"type": "REGISTER", "role": "agent", "pc_id": args.pc_id, "pc_name": args.pc_name}
+    power = getattr(args, "power_commands", None)
+    if power is not None:
+        if power.boot_id is not None or power.mode != "off":
+            message["boot_id"] = power.boot_id
+        if power.mode != "off":
+            message["power_control_mode"] = power.mode
     if getattr(args, "token", None):
         message["token"] = args.token
     send_message(conn, message)
@@ -70,6 +78,9 @@ def register(conn, args):
     args.session_rtt_enabled = (response.get("rtt_v1") is True
                                 and getattr(args, "rtt_interval", 5) != 0)
     args.session_foreground_enabled = response.get("exam_foreground_v1") is True
+    args.session_power_enabled = response.get("power_control_v1") is True
+    if power is not None and power.mode != "off" and not args.session_power_enabled:
+        LOG.warning("Remote power control is unsupported by the server")
     if (getattr(args, "exam_mode", False) or getattr(args, "allow_remote_exam_control", False)) and response.get("exam_events_v1") is not True:
         LOG.error("Exam mode requires server exam_events_v1 support; exam monitoring has not started")
         raise RegistrationError("Exam mode requires server exam_events_v1 support")
@@ -87,6 +98,8 @@ def stream(conn, args):
     rtt = (RttTracker(args.pc_id, getattr(args, "rtt_interval", 5), getattr(args, "rtt_timeout", 3))
            if getattr(args, "session_rtt_enabled", False) else None)
     exam_commands = getattr(args, "exam_commands", None) or ExamCommands(args.pc_id)
+    power_commands = getattr(args, "power_commands", None) or PowerCommands(args.pc_id)
+    chrome_tabs = ChromeTabMonitor(args.pc_id) if getattr(args, "watch_chrome_tabs", False) else None
     exam_commands.foreground_enabled = getattr(args, "session_foreground_enabled", False)
     initial_monitor = (ExamMonitor(args.pc_id, args.exam_id, args.forbid_process, args.exam_poll_interval,
                                   foreground_enabled=exam_commands.foreground_enabled)
@@ -144,6 +157,9 @@ def stream(conn, args):
                     rtt.accept(response)
                     continue
                 if response.get("type") == "COMMAND":
+                    if response.get("action") in POWER_ACTIONS:
+                        power_commands.handle(response, send, server_supported=getattr(args, "session_power_enabled", False))
+                        continue
                     if response.get("action") in EXAM_ACTIONS:
                         with exam_commands.lock:
                             for result in exam_commands.handle(response):
@@ -169,11 +185,19 @@ def stream(conn, args):
     def watch_exam():
         try:
             while not failed.is_set():
-                exam_commands.poll(send)
+                if chrome_tabs is None:
+                    exam_commands.poll(send)
+                else:
+                    with exam_commands.lock:
+                        chrome_tabs.poll(exam_commands.monitor)
+                        exam_commands.poll(send)
                 if failed.wait(.1):
                     return
         except (OSError, EOFError, ValueError) as exc:
             fail(exc)
+        finally:
+            if chrome_tabs is not None:
+                chrome_tabs.stop()
 
     interval = heartbeat_interval(getattr(args, "session_heartbeat_interval", 0))
     reader = threading.Thread(target=receive, name="agent-receiver", daemon=True)
@@ -226,6 +250,16 @@ def stream(conn, args):
 
 
 def run(args, context=None):
+    authenticated_live = bool(context is not None and getattr(args, "token", None) and args.live)
+    power_mode = getattr(args, "power_control", "off") if authenticated_live else "off"
+    boot_id = read_boot_id() if authenticated_live else None
+    if power_mode == "execute" and boot_id is None:
+        LOG.warning("Remote power control unavailable: Windows boot ID could not be read")
+        power_mode = "off"
+    power_db = getattr(args, "id_file", DEFAULT_ID_FILE).parent / "agent-power.sqlite3"
+    if power_mode != "off":
+        power_db.parent.mkdir(parents=True, exist_ok=True)
+    args.power_commands = PowerCommands(args.pc_id, power_mode, boot_id, power_db)
     args.exam_commands = ExamCommands(args.pc_id, enabled=bool(
         getattr(args, "allow_remote_exam_control", False) and context is not None
         and getattr(args, "token", None) and args.live))
@@ -283,9 +317,13 @@ def main():
     parser.add_argument("--live", action="store_true", help="Stream real metrics and reconnect")
     parser.add_argument("--enable-process-control", action="store_true",
                         help="Accept process inventory/stop commands over authenticated TLS")
+    parser.add_argument("--power-control", choices=("off", "simulate", "execute"), default="off",
+                        help="Simulate or allow local PC power commands over authenticated TLS; default off")
     parser.add_argument("--exam-mode", action="store_true", help="Observe forbidden program names during an exam")
     parser.add_argument("--allow-remote-exam-control", action="store_true",
                         help="Allow authenticated GUI exam on/off and status commands; starts off unless --exam-mode")
+    parser.add_argument("--watch-chrome-tabs", action="store_true",
+                        help="Log local Chrome exam tab transitions from the optional extension")
     parser.add_argument("--exam-id", help="Exam session identifier (1-64 ASCII letters/digits/_.-)")
     parser.add_argument("--forbid-process", action="append", default=None, metavar="NAME.exe",
                         help="Replace default exam detection list with exact executable names; repeat for multiple names")
@@ -308,6 +346,8 @@ def main():
             ExamMonitor("validation", args.exam_id, args.forbid_process, args.exam_poll_interval)
         elif args.exam_id or args.forbid_process or args.exam_poll_interval != 1:
             raise ValueError("Exam settings require --exam-mode")
+        if args.watch_chrome_tabs and not (args.exam_mode or args.allow_remote_exam_control):
+            raise ValueError("Chrome tab monitoring requires local or remote exam mode")
     except ValueError as exc:
         parser.error(str(exc))
     if not 1 <= args.port <= 65535:
@@ -327,6 +367,9 @@ def main():
             return 2
         if args.enable_process_control and (context is None or not args.live):
             LOG.error("Process control requires TLS/token settings and --live")
+            return 2
+        if args.power_control != "off" and (context is None or not args.token or not args.live):
+            LOG.error("Power control requires TLS/token settings and --live")
             return 2
         return run(args, context)
     except KeyboardInterrupt:
