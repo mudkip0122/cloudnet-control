@@ -70,6 +70,11 @@ class AuditStore:
                                 (pc_id, received_epoch, event['kind'], json.dumps(event, allow_nan=False)))
                 self._update_alert(pc_id, event)
             self.db.execute("UPDATE devices SET last_seen_epoch=? WHERE pc_id=?", (received_epoch, pc_id))
+        return received_epoch
+
+    def open_alerts(self):
+        with self.lock:
+            return self.db.execute("SELECT pc_id, kind, alert_id FROM active_alerts ORDER BY pc_id, kind").fetchall()
 
     def _update_alert(self, pc_id, event):
         if event['state'] == 'raised':
@@ -82,6 +87,7 @@ class AuditStore:
         self.db.execute("INSERT INTO monitoring_events(pc_id, received_epoch, kind, payload) VALUES (?, ?, ?, ?)",
                         (pc_id, now, kind, json.dumps(event)))
         self._update_alert(pc_id, event)
+        return event
 
     def recover_after_restart(self):
         # A previous process cannot still own an Agent session. Detection is now,
@@ -101,8 +107,9 @@ class AuditStore:
         self.prune()
         with self.lock, self.db:
             existing = self.db.execute("SELECT alert_id FROM active_alerts WHERE pc_id=? AND kind='DEVICE_OFFLINE'", (pc_id,)).fetchone()
+            transition = None
             if existing:
-                self._transition(pc_id, 'DEVICE_OFFLINE', 'resolved', existing[0], now)
+                transition = self._transition(pc_id, 'DEVICE_OFFLINE', 'resolved', existing[0], now)
             self.db.execute("INSERT INTO devices VALUES (?, ?, ?, 1) ON CONFLICT(pc_id) DO UPDATE SET pc_name=excluded.pc_name, last_seen_epoch=excluded.last_seen_epoch, online=1", (pc_id, pc_name, now))
             if boot_id is not None:
                 pending = self.db.execute("SELECT command_id, request, result, received_epoch FROM command_audit WHERE pc_id=? AND received_epoch>=? AND received_epoch<=? AND outcome IN ('partial_result_received', 'result_received', 'timeout_unconfirmed', 'server_restart_unconfirmed') AND reboot_confirmed_at IS NULL", (pc_id, now - 300, now)).fetchall()
@@ -119,14 +126,17 @@ class AuditStore:
                                 and new_time > old_time and new_time.timestamp() >= requested_at - 1):
                             self.db.execute("UPDATE command_audit SET reboot_confirmed_at=?, observed_boot_id=? WHERE command_id=?", (datetime.fromtimestamp(now, timezone.utc).isoformat(), boot_id, command_id))
                             self._command_transition(command_id, 'boot_changed', None, now)
+            return transition
 
     def disconnect_device(self, pc_id, now):
         self.prune()
         with self.lock, self.db:
             existing = self.db.execute("SELECT alert_id FROM active_alerts WHERE pc_id=? AND kind='DEVICE_OFFLINE'", (pc_id,)).fetchone()
+            transition = None
             if not existing:
-                self._transition(pc_id, 'DEVICE_OFFLINE', 'raised', str(uuid4()), now)
+                transition = self._transition(pc_id, 'DEVICE_OFFLINE', 'raised', str(uuid4()), now)
             self.db.execute("UPDATE devices SET online=0, last_seen_epoch=? WHERE pc_id=?", (now, pc_id))
+            return transition
 
     def monitoring_event(self, pc_id, kind, received_epoch, payload=None):
         self.prune()

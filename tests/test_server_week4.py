@@ -39,6 +39,10 @@ class Week4Tests(unittest.TestCase):
 
             store = AuditStore(path)
             server = MonitoringServer(audit=store)
+            opened = server.alert_snapshot_locked()
+            cpu = next(alert for alert in opened if alert['kind'] == 'CPU_HIGH')
+            self.assertEqual(cpu['observation'], 'unknown')
+            self.assertEqual({alert['kind'] for alert in opened}, {'CPU_HIGH', 'DEVICE_OFFLINE'})
             store.register_device('PC-01', 'test PC', time.time())
             server.devices['PC-01'] = {}
             with patch('server.main.time.monotonic', return_value=20):

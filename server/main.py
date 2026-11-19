@@ -113,6 +113,7 @@ class MonitoringServer:
         self.sessions = {}
         self.admins = set()
         self.exam_admins = set()
+        self.alert_admins = set()
         self.camera_admins = {}
         self.camera_status = {}
         self.camera_last_frame = {}
@@ -187,6 +188,30 @@ class MonitoringServer:
         with self.lock:
             return {"type": "DEVICE_LIST", "devices": [self.device_snapshot(pc_id) for pc_id in self.devices]}
 
+    def alert_snapshot_locked(self):
+        rows = self.audit.open_alerts()
+        if len(rows) > 600:
+            raise ValueError('Too many active alerts for snapshot')
+        now = time.monotonic()
+        result = []
+        for pc_id, kind, alert_id in rows:
+            device = self.devices.get(pc_id, {})
+            field = {'CPU_HIGH': 'cpu_percent', 'RAM_HIGH': 'ram_percent'}.get(kind)
+            received = self.metrics_received_at.get(pc_id)
+            known = (field is None or (device.get('online') and received is not None and now - received <= 6
+                                      and (device.get('metrics') or {}).get(field) is not None))
+            result.append({'pc_id': pc_id, 'kind': kind, 'alert_id': alert_id,
+                           'state': 'raised', 'observation': 'known' if known else 'unknown'})
+        return result
+
+    def alert_event_locked(self, pc_id, event, epoch):
+        if event is None:
+            return
+        message = {'type': 'ALERT_EVENT', 'version': 1, 'pc_id': pc_id, **event,
+                   'occurred_at': datetime.fromtimestamp(epoch, timezone.utc).isoformat()}
+        for admin in self.alert_admins:
+            admin.notify(message)
+
     def sweep_commands(self):
         while True:
             time.sleep(.2)
@@ -241,6 +266,9 @@ class MonitoringServer:
             exam_supported = self.audit is not None and self.auth is not None and isinstance(conn, ssl.SSLSocket)
             if subscribe_exam and not exam_supported:
                 raise ValueError("Exam subscription requires TLS, authentication and audit storage")
+            subscribe_alerts = message.get('subscribe_alerts', False)
+            if type(subscribe_alerts) is not bool or (subscribe_alerts and (role != 'admin' or not exam_supported)):
+                raise ValueError('Alert subscription requires authenticated TLS admin and audit storage')
             camera_scope = message.get("subscribe_camera")
             if camera_scope is not None and (role != 'admin' or not exam_supported or
                     not isinstance(camera_scope, dict) or set(camera_scope) != {'pc_id', 'exam_id'} or
@@ -276,7 +304,9 @@ class MonitoringServer:
                     if candidate in self.sessions:
                         raise ValueError("PC ID is already connected")
                     if self.audit is not None:
-                        self.audit.register_device(candidate, message["pc_name"], time.time(), boot_id)
+                        registered_at = time.time()
+                        alert = self.audit.register_device(candidate, message["pc_name"], registered_at, boot_id)
+                        self.alert_event_locked(candidate, alert, registered_at)
                     pc_id = candidate
                     self.sessions[pc_id] = conn
                     self.metrics_received_at.pop(pc_id, None)
@@ -300,7 +330,7 @@ class MonitoringServer:
             if exam_supported:
                 response.update(exam_events_v1=True, exam_control_v1=True, exam_foreground_v1=True,
                                 exam_chrome_timeline_v1=True, history_v1=True, power_control_v1=True,
-                                exam_camera_stream_v1=True)
+                                exam_camera_stream_v1=True, alert_stream_v1=True)
             session.send(response)
             if role == "admin":
                 session.start_notifications()
@@ -310,6 +340,13 @@ class MonitoringServer:
             if role == "admin" and subscribe_exam:
                 with self.lock:
                     self.exam_admins.add(session)
+            if subscribe_alerts:
+                with self.lock:
+                    opened = self.alert_snapshot_locked()
+                    for offset in range(0, max(1, len(opened)), 20):
+                        session.notify({'type': 'ALERT_SNAPSHOT', 'version': 1, 'page': offset // 20,
+                                        'done': offset + 20 >= len(opened), 'alerts': opened[offset:offset + 20]})
+                    self.alert_admins.add(session)
             if camera_scope is not None:
                 with self.lock:
                     self.camera_admins[session] = (camera_scope['pc_id'], camera_scope['exam_id'])
@@ -371,6 +408,7 @@ class MonitoringServer:
             with self.lock:
                 self.admins.discard(session)
                 self.exam_admins.discard(session)
+                self.alert_admins.discard(session)
                 self.camera_admins.pop(session, None)
                 self.connections.pop(conn, None)
                 # Retain accepted requests until result/expiry even if their GUI
@@ -389,7 +427,9 @@ class MonitoringServer:
                             state.update(since=None, last=None)
                         if self.audit is not None:
                             try:
-                                self.audit.disconnect_device(pc_id, time.time())
+                                disconnected_at = time.time()
+                                alert = self.audit.disconnect_device(pc_id, disconnected_at)
+                                self.alert_event_locked(pc_id, alert, disconnected_at)
                             except sqlite3.Error:
                                 LOG.error("Could not persist offline event")
                         disconnected = True
@@ -651,7 +691,9 @@ class MonitoringServer:
                                        "state": "resolved", "alert_id": state.pop("alert_id")})
                 state["last"] = now if value is not None else None
             if self.audit is not None:
-                self.audit.metric(pc_id, time.time(), clean, events)
+                received_epoch = self.audit.metric(pc_id, time.time(), clean, events)
+                for event in events:
+                    self.alert_event_locked(pc_id, event, received_epoch)
             self.alert_states[pc_id] = updated
         with self.lock:
             received = utc_now()
