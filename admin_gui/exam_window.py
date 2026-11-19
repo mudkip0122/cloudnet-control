@@ -2,12 +2,16 @@
 import math
 import queue
 import re
+import time
 import tkinter as tk
 from tkinter import ttk, messagebox
+
+from PIL import Image, ImageTk
 
 from admin_gui.process_control import ProcessClient, command_request
 from admin_gui.exam_events import MONITOR_LABELS, exam_mode, event_columns, timestamp
 from admin_gui.presentation import device_view
+from admin_gui.theme import header, window
 
 
 def exam_request(pc_id, action, exam_id="", names="", interval="1"):
@@ -39,63 +43,84 @@ class ExamWindow:
         self.needs_status = False
         self.client = ProcessClient(dashboard.host, dashboard.port, dashboard.context,
                                     dashboard.token, server_name=dashboard.server_name)
-        self.window = tk.Toplevel(dashboard.root)
-        self.window.title("시험 모드")
-        self.window.geometry("1040x740")
-        self.window.minsize(850, 650)
+        self.window = window(dashboard.root, "시험 모드", "1040x700", (850, 610))
         self.history_revision = -1
         self.display_pc_id = None
         self.last_mode_known = False
+        self.help_window = None
+        self.video_target = self.video_frame = self.video_photo = None
         self.agent_session_id = None
         self.pc_choice = tk.StringVar()
         self.pc_controls = {}
         self.target_text = tk.StringVar()
         self.status = tk.StringVar(value="")
         self.monitor_text = tk.StringVar(value="시험 상태 미확인")
-        header = ttk.Frame(self.window)
-        header.pack(fill='x', padx=12, pady=8)
+        bar = header(self.window, "시험 모드")
         self.connection_text = tk.StringVar(value='연결 확인 중')
-        self.connection_label = ttk.Label(header, textvariable=self.connection_text)
-        self.connection_label.pack(side='left')
-        ttk.Button(header, text='도움말', command=self.show_help).pack(side='right')
+        self.connection_label = ttk.Label(self.window, textvariable=self.connection_text, style="Muted.TLabel")
+        self.connection_label.pack(anchor='w', padx=16, pady=(8, 2))
+        ttk.Button(bar, text='도움말', style="Header.TButton", command=self.show_help).pack(side='right')
         self.foreground_text = tk.StringVar(value='활성 창 감시 미확인')
-        ttk.Label(self.window, textvariable=self.foreground_text).pack(padx=12, pady=4)
+        ttk.Label(self.window, textvariable=self.foreground_text).pack(anchor='w', padx=16)
         self.camera_text = tk.StringVar()
-        ttk.Label(self.window, textvariable=self.camera_text).pack(padx=12)
+        ttk.Label(self.window, textvariable=self.camera_text).pack(anchor='w', padx=16)
         self.inputs = []
-        for title, default in (("시험 ID", ""), ("금지 프로그램 (비우면 기본 목록)", ""), ("검사 간격 (초)", "1")):
-            ttk.Label(self.window, text=title).pack(anchor="w", padx=12)
+        settings = ttk.Frame(self.window, style="Card.TFrame", padding=12)
+        settings.pack(fill="x", padx=12, pady=(8, 0))
+        settings.columnconfigure(1, weight=1)
+        for column, (title, default, width) in enumerate((
+                ("시험 ID", "", 19), ("금지 프로그램 (비우면 기본 목록)", "", 36), ("검사 간격 (초)", "1", 14))):
+            ttk.Label(settings, text=title, style="Surface.TLabel").grid(
+                row=0, column=column, sticky="w", padx=5)
             value = tk.StringVar(value=default)
-            ttk.Entry(self.window, textvariable=value, width=65).pack(padx=12, pady=4)
+            ttk.Entry(settings, textvariable=value, width=width).grid(
+                row=1, column=column, sticky="ew", padx=5, pady=(4, 0))
             self.inputs.append(value)
         self.buttons = []
-        actions = ttk.Frame(self.window)
+        actions = ttk.Frame(self.window, style="Card.TFrame", padding=(12, 6))
         actions.pack(fill='x', padx=12, pady=8)
         actions.columnconfigure(1, weight=1)
         for row, pc_id in enumerate(('PC-01', 'PC-02', 'PC-03')):
-            ttk.Label(actions, text=pc_id).grid(row=row, column=0, sticky='w', padx=(0, 8))
+            ttk.Label(actions, text=pc_id, style="CardTitle.TLabel").grid(row=row, column=0, sticky='w', padx=(0, 8))
             state = tk.StringVar(value='상태 미확인')
-            ttk.Label(actions, textvariable=state).grid(row=row, column=1, sticky='w', padx=8)
+            ttk.Label(actions, textvariable=state, style="Surface.TLabel").grid(row=row, column=1, sticky='w', padx=8)
             controls = {'state': state}
             for column, (action, title) in enumerate((('on', '켜기'), ('off', '끄기'), ('status', '조회')), start=2):
-                button = ttk.Button(actions, text=title, state='disabled',
+                button_style = {'on': 'Primary.TButton', 'off': 'Danger.TButton', 'status': 'TButton'}[action]
+                button = ttk.Button(actions, text=title, state='disabled', style=button_style,
                                     command=lambda pc=pc_id, a=action: self.submit_for_pc(pc, a))
                 button.grid(row=row, column=column, padx=4, pady=2)
                 controls[action] = button
                 self.buttons.append(button)
             self.pc_controls[pc_id] = controls
         ttk.Label(self.window, textvariable=self.status, wraplength=520).pack(padx=12, pady=10)
-        ttk.Label(self.window, text="시험 타임라인 · 전체 PC · 최신순").pack(anchor='w', padx=12)
         history_actions = ttk.Frame(self.window)
         history_actions.pack(fill='x', padx=12, pady=(4, 0))
+        ttk.Label(history_actions, text="시험 타임라인 · 전체 PC · 최신순", style="Section.TLabel").pack(side="left")
         self.delete_selected_button = ttk.Button(history_actions, text='선택 내역 지우기',
                                                  command=self.delete_selected_history, state='disabled')
-        self.delete_selected_button.pack(side='left')
         self.delete_all_button = ttk.Button(history_actions, text='전체 내역 지우기',
-                                            command=self.delete_all_history, state='disabled')
-        self.delete_all_button.pack(side='left', padx=8)
-        container = ttk.Frame(self.window)
-        container.pack(fill="both", expand=True, padx=12, pady=8)
+                                            command=self.delete_all_history, style="Danger.TButton", state='disabled')
+        self.delete_all_button.pack(side='right')
+        self.delete_selected_button.pack(side='right', padx=8)
+        timeline = ttk.Frame(self.window)
+        timeline.pack(fill="both", expand=True, padx=12, pady=8)
+        video = ttk.Frame(timeline, style="Card.TFrame", padding=8)
+        video.pack(side="right", fill="y", padx=(8, 0))
+        ttk.Label(video, text="시험 영상", style="CardTitle.TLabel").pack(anchor="w")
+        picker = ttk.Combobox(video, textvariable=self.pc_choice, state="readonly", width=22)
+        picker.configure(values=tuple(sorted(set(self.pc_controls) | dashboard.devices.keys())))
+        if dashboard.sample:
+            picker.configure(values=tuple(sorted(dashboard.devices)))
+        picker.pack(fill="x", pady=(4, 5))
+        picker.bind("<<ComboboxSelected>>", lambda event: self.sync_devices())
+        viewport = ttk.Frame(video, style="Surface.TFrame", width=250, height=160)
+        viewport.pack(fill="x", expand=True)
+        viewport.pack_propagate(False)
+        self.video_label = ttk.Label(viewport, text="표시할 영상 없음", style="Surface.TLabel", anchor="center")
+        self.video_label.pack(fill="both", expand=True)
+        container = ttk.Frame(timeline)
+        container.pack(side="left", fill="both", expand=True)
         columns = ('pc', 'exam', 'kind', 'name', 'pid', 'time')
         self.history_table = ttk.Treeview(container, columns=columns, show='headings', height=7)
         for column, title, width in zip(columns,
@@ -106,6 +131,9 @@ class ExamWindow:
         scroll = ttk.Scrollbar(container, orient='vertical', command=self.history_table.yview)
         self.history_table.configure(yscrollcommand=scroll.set)
         scroll.pack(side='right', fill='y')
+        horizontal = ttk.Scrollbar(container, orient="horizontal", command=self.history_table.xview)
+        self.history_table.configure(xscrollcommand=horizontal.set)
+        horizontal.pack(side="bottom", fill="x")
         self.history_table.pack(fill='both', expand=True)
         for tag, color in (('warning', '#b91c1c'), ('returned', '#047857'), ('gap', '#b45309')):
             self.history_table.tag_configure(tag, foreground=color)
@@ -114,7 +142,17 @@ class ExamWindow:
         self.timer = self.window.after(100, self.tick)
 
     def show_help(self):
-        messagebox.showinfo('시험 모드 도움말',
+        if self.help_window is not None and self.help_window.winfo_exists():
+            self.help_window.deiconify()
+            self.help_window.lift()
+            return
+        title = "시험 모드 도움말"
+        child = window(self.window, title, "680x420", (660, 390))
+        self.help_window = child
+        header(child, title)
+        card = ttk.Frame(child, style="Card.TFrame", padding=16)
+        card.pack(fill="both", expand=True, padx=12, pady=12)
+        ttk.Label(card, style="Surface.TLabel", justify="left", wraplength=600, text=(
             '금지 프로그램은 쉼표로 구분합니다. 비우면 기본 목록, 입력하면 해당 목록만 적용됩니다.\n\n'
             '일반 앱은 표시된 창 기준(최소화·트레이 제외), 원격제어 앱은 백그라운드 포함입니다.\n'
             '미분류 사용자 지정 앱은 모든 실행 인스턴스를 감지합니다.\n'
@@ -123,7 +161,9 @@ class ExamWindow:
             'Chrome 이탈·복귀를 감지하며 탭/URL 감시·자동 차단은 하지 않습니다.\n'
             '공백 전후 이탈 시간을 계산하지 않으며 이력은 현재 실행이나 부정행위 확정이 아닙니다.\n\n'
             '각 PC 버튼은 해당 PC만 제어합니다. 창을 닫아도 켠 시험은 Agent에서 계속됩니다.\n'
-            '내역 지우기는 이 GUI에만 적용되며 서버 저장 기록은 유지됩니다.', parent=self.window)
+            '내역 지우기는 이 GUI에만 적용되며 서버 저장 기록은 유지됩니다.')).pack(anchor="w")
+        ttk.Button(card, text="닫기", command=child.destroy).pack(side="bottom", anchor="e")
+        child.bind("<Escape>", lambda event: child.destroy())
 
     def device_ready(self, pc_id):
         device = self.dashboard.devices.get(pc_id)
@@ -180,6 +220,41 @@ class ExamWindow:
             self.submit("status")
         self.target_text.set(f"선택 PC: {self.display_pc_id}" + ('' if target else ' · 오프라인/데이터 지연'))
         self.refresh_history()
+
+    def refresh_video(self):
+        dashboard = self.dashboard
+        frames = getattr(dashboard.exam_client, "camera_frames", None)
+        pc_id = self.display_pc_id
+        device = dashboard.devices.get(pc_id, {})
+        active = (dashboard.exam_store.active_camera(pc_id) if
+                  dashboard.connected and dashboard.exam_stream_connected and device.get("online") else None)
+        target = (dashboard.exam_generation, pc_id, *active) if frames is not None and active else None
+        if target != self.video_target:
+            self.video_target = target
+            self.clear_video()
+        if frames is not None:
+            frames.select(target)
+        if target is None:
+            return
+        now = time.monotonic()
+        frame = frames.take()
+        if (frame is not None and not frame.expired(now) and frame.observed >= active[2]
+                and (self.video_frame is None or frame.observed > self.video_frame.observed)):
+            try:
+                image = frame.image()
+                image.thumbnail((250, 160), Image.Resampling.LANCZOS)
+                photo = ImageTk.PhotoImage(image, master=self.window)
+            except (OSError, ValueError, Image.DecompressionBombError):
+                pass
+            else:
+                self.video_label.configure(image=photo, text="")
+                self.video_photo, self.video_frame = photo, frame
+        if self.video_frame is not None and self.video_frame.expired(now):
+            self.clear_video()
+
+    def clear_video(self):
+        self.video_label.configure(image="", text="표시할 영상 없음")
+        self.video_photo = self.video_frame = None
 
     def refresh_history(self):
         store = self.dashboard.exam_store
@@ -275,13 +350,17 @@ class ExamWindow:
         except queue.Empty:
             pass
         self.sync_devices()
-        self.refresh_history()
+        self.refresh_video()
         self.timer = self.window.after(100, self.tick)
 
     def close(self):
         if self.closed:
             return
         self.closed = True
+        frames = getattr(self.dashboard.exam_client, "camera_frames", None)
+        if frames is not None:
+            frames.select(None)
+        self.clear_video()
         self.window.after_cancel(self.timer)
         self.client.close()
         self.window.destroy()

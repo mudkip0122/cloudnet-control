@@ -4,6 +4,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 from admin_gui.process_control import ProcessClient, command_request
+from admin_gui.theme import BORDER, FONT, INK, WHITE, header, window
 
 PROTECTION_REASONS = {
     "AGENT_OR_SYSTEM_PID": "Agent·시스템·상위 프로세스",
@@ -38,10 +39,8 @@ RESULTS = {
 class ProcessWindow:
     def __init__(self, dashboard):
         self.dashboard = dashboard
-        self.window = tk.Toplevel(dashboard.root)
-        self.window.title("CloudNet Control — 프로세스")
-        self.window.geometry("1120x520")
-        self.window.minsize(850, 400)
+        self.window = window(dashboard.root, "CloudNet Control — 프로세스", "1120x640", (850, 540))
+        header(self.window, "프로세스 목록")
         self.target = None
         self.online = False
         self.rows = {}
@@ -60,22 +59,22 @@ class ProcessWindow:
         self.target_text = tk.StringVar(value="PC를 선택하세요")
         self.status = tk.StringVar(value="목록을 새로고침하세요")
         self.outcome = tk.StringVar(value="")
-        ttk.Label(self.window, textvariable=self.target_text).pack(anchor="w", padx=12, pady=8)
-        ttk.Label(self.window, textvariable=self.status).pack(anchor="w", padx=12)
-        search_bar = ttk.Frame(self.window)
+        ttk.Label(self.window, textvariable=self.target_text, style="Section.TLabel").pack(anchor="w", padx=16, pady=(10, 2))
+        ttk.Label(self.window, textvariable=self.status, style="Muted.TLabel").pack(anchor="w", padx=16)
+        search_bar = ttk.Frame(self.window, style="Card.TFrame", padding=10)
         search_bar.pack(fill="x", padx=12, pady=(8, 0))
-        ttk.Label(search_bar, text="검색 (이름·PID·사용자)").pack(side="left")
+        ttk.Label(search_bar, text="검색 (이름·PID·사용자)", style="Surface.TLabel").pack(side="left")
         self.search = tk.StringVar()
         self.search_entry = ttk.Entry(search_bar, textvariable=self.search)
         self.search_entry.pack(side="left", fill="x", expand=True, padx=8)
         ttk.Button(search_bar, text="지우기", command=lambda: self.search.set("")).pack(side="left")
         self.search_count = tk.StringVar(value="표시 0 / 전체 0개")
-        ttk.Label(search_bar, textvariable=self.search_count).pack(side="left", padx=(12, 0))
+        ttk.Label(search_bar, textvariable=self.search_count, style="Surface.TLabel").pack(side="left", padx=(12, 0))
         self.search_entry.bind("<Escape>", lambda event: self.search.set(""))
         columns = ("pid", "name", "username", "memory", "can_stop", "protected_reason", "create_time")
         container = ttk.Frame(self.window)
         container.pack(fill="both", expand=True, padx=12, pady=8)
-        self.table = ttk.Treeview(container, columns=columns, show="tree headings", selectmode="extended")
+        self.table = ttk.Treeview(container, columns=columns, show="tree headings", selectmode="extended", height=5)
         self.table.heading("#0", text="그룹 / 개수")
         self.table.column("#0", width=170)
         for key, title, width in zip(columns,
@@ -87,21 +86,26 @@ class ProcessWindow:
         scroll = ttk.Scrollbar(container, orient="vertical", command=self.table.yview)
         self.table.configure(yscrollcommand=scroll.set)
         scroll.pack(side="right", fill="y")
+        horizontal = ttk.Scrollbar(container, orient="horizontal", command=self.table.xview)
+        self.table.configure(xscrollcommand=horizontal.set)
+        horizontal.pack(side="bottom", fill="x")
         self.table.pack(fill="both", expand=True)
         self.table.bind("<<TreeviewSelect>>", lambda event: self.update_buttons())
         ttk.Label(self.window, text="열 제목 클릭: 오름차순 / 내림차순 · 종료는 선택한 PID 하나에만 적용됩니다",
                   wraplength=1000).pack(anchor="w", padx=12)
         actions = ttk.Frame(self.window)
         actions.pack(fill="x", padx=12, pady=8)
-        self.refresh_button = ttk.Button(actions, text="새로고침", command=self.refresh)
+        self.refresh_button = ttk.Button(actions, text="새로고침", style="Primary.TButton", command=self.refresh)
         self.refresh_button.pack(side="left")
-        self.stop_button = ttk.Button(actions, text="선택 프로세스 종료", command=self.stop_selected)
+        self.stop_button = ttk.Button(actions, text="선택 프로세스 종료", style="Danger.TButton", command=self.stop_selected)
         self.stop_button.pack(side="left", padx=8)
         ttk.Checkbutton(actions, text="같은 이름 그룹", variable=self.grouped,
                         command=self.render_rows).pack(side="left", padx=8)
-        self.batch_button = ttk.Button(actions, text="선택 그룹·PID 일괄 종료", command=self.stop_batch)
+        self.batch_button = ttk.Button(actions, text="선택 그룹·PID 일괄 종료", style="Danger.TButton", command=self.stop_batch)
         self.batch_button.pack(side="left", padx=8)
-        self.batch_results = tk.Text(self.window, height=5, state="disabled")
+        self.batch_results = tk.Text(self.window, height=4, state="disabled", font=(FONT, 10), wrap="word",
+                                     background=WHITE, foreground=INK, relief="flat",
+                                     highlightbackground=BORDER, highlightthickness=1, padx=8, pady=5)
         self.batch_results.pack(fill="x", padx=12)
         ttk.Label(self.window, textvariable=self.outcome, wraplength=1000).pack(anchor="w", padx=12, pady=8)
         self.window.protocol("WM_DELETE_WINDOW", self.close)

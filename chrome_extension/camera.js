@@ -3,6 +3,7 @@ const preview = document.querySelector("#preview");
 const port = chrome.runtime.connect({ name: "cloudnet-exam-camera" });
 let state = "waiting";
 let stream = null;
+let frameTimer = null;
 
 function update(next, text, notify = true) {
   state = next;
@@ -20,6 +21,8 @@ function stopTracks(media) {
 }
 
 function release() {
+  if (frameTimer !== null) clearInterval(frameTimer);
+  frameTimer = null;
   if (stream) stopTracks(stream);
   stream = null;
   preview.srcObject = null;
@@ -32,8 +35,34 @@ function stop() {
   update("off", "시험 연결이 종료되어 카메라를 껐습니다.", false);
 }
 
-async function start() {
+function shareFrames() {
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d");
+  if (context === null) return;
+  frameTimer = setInterval(() => {
+    if (state !== "on" || !preview.videoWidth || !preview.videoHeight) return;
+    const scale = Math.min(1, 320 / preview.videoWidth, 240 / preview.videoHeight);
+    canvas.width = Math.max(1, Math.round(preview.videoWidth * scale));
+    canvas.height = Math.max(1, Math.round(preview.videoHeight * scale));
+    context.drawImage(preview, 0, 0, canvas.width, canvas.height);
+    const prefix = "data:image/jpeg;base64,";
+    let image = canvas.toDataURL("image/jpeg", 0.65);
+    if (image.length > prefix.length + 32768) image = canvas.toDataURL("image/jpeg", 0.4);
+    if (!image.startsWith(prefix) || image.length > prefix.length + 32768) return;
+    try {
+      port.postMessage({ kind: "camera_frame", data: image.slice(prefix.length) });
+    } catch {
+      stop();
+    }
+  }, 500);
+}
+
+async function start(shareCamera) {
   if (state !== "waiting") return;
+  if (shareCamera) {
+    document.querySelector("#camera-details").textContent =
+      "카메라 영상이 시험 감독자에게 전송됩니다. 시험이 끝나면 카메라가 자동으로 꺼집니다.";
+  }
   update("starting", "Chrome에서 카메라 사용 권한을 요청하면 허용을 선택해 주세요.", false);
   try {
     const media = await navigator.mediaDevices.getUserMedia({
@@ -57,8 +86,9 @@ async function start() {
     preview.srcObject = media;
     preview.hidden = false;
     update("on", "카메라가 켜져 있습니다.");
+    if (shareCamera && state === "on") shareFrames();
   } catch (error) {
-    if (state !== "starting") return;
+    if (state !== "starting" && state !== "on") return;
     release();
     if (error.name === "NotAllowedError" || error.name === "SecurityError") {
       update("permission_denied", "Chrome 또는 Windows에서 카메라 권한을 허용하지 않았습니다.");
@@ -68,8 +98,8 @@ async function start() {
   }
 }
 
-port.onMessage.addListener(({ kind }) => {
-  if (kind === "start") void start();
+port.onMessage.addListener(({ kind, shareCamera }) => {
+  if (kind === "start") void start(shareCamera === true);
 });
 port.onDisconnect.addListener(stop);
 window.addEventListener("pagehide", stop, { once: true });

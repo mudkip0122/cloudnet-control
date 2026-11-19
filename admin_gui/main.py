@@ -12,6 +12,7 @@ import customtkinter as ctk
 from common.protocol import recv_message, send_message
 from common.security import client_arguments, client_settings, connect
 from admin_gui.presentation import device_view
+from admin_gui.theme import BACKGROUND, FONT, GREEN, MUTED, RED, configure_theme, header, window
 from admin_gui.charts import LiveCharts, MetricHistory
 from admin_gui.process_window import ProcessWindow
 from admin_gui.exam_window import ExamWindow
@@ -22,6 +23,13 @@ from admin_gui.process_control import POWER_ACTIONS, ProcessClient
 
 
 class Dashboard:
+    DETAIL_FIELDS = (
+        ("name", "PC 이름 / ID"), ("state", "상태"), ("up", "업로드 Mbps"),
+        ("down", "다운로드 Mbps"), ("time", "측정 시각 UTC"), ("received", "서버 측정 수신 UTC"),
+        ("age", "측정 후 경과"), ("gui_received", "GUI 목록 수신 UTC"),
+        ("snapshot_age", "목록 수신 후 경과"), ("rtt", "서버 RTT"), ("foreground", "Chrome 활성 창 감시"),
+    )
+
     def __init__(self, root, port, host="127.0.0.1", context=None, token=None, server_name=None, sample=False):
         self.root = root
         self.port = port
@@ -48,87 +56,101 @@ class Dashboard:
         self.exam_stream_connected = False
         self.exam_gap = False
         self.power_client = None
+        self.power_supported = False
         self.power_operations = {}
         root.title("CloudNet Control — " + ("SAMPLE DATA / OFFLINE" if sample else "PC 모니터링"))
-        root.geometry("1100x940")
-        root.minsize(950, 900)
+        root.geometry("1240x820")
+        root.minsize(960, 690)
+        root.configure(fg_color=BACKGROUND)
+        configure_theme(root)
         self.status = tk.StringVar(value="샘플 데이터 · 서버 연결 없음" if sample else "서버 연결 중…")
-        ctk.CTkLabel(root, textvariable=self.status, font=("", 16)).pack(pady=15)
         self.connection_details = tk.StringVar()
-        ctk.CTkLabel(root, textvariable=self.connection_details).pack()
-        self.update_connection_details()
         self.event_status = tk.StringVar(value="초기 전체 목록 대기")
-        ctk.CTkLabel(root, textvariable=self.event_status).pack()
+        self.update_connection_details()
         self.exam_stream = tk.StringVar(value="시험 이벤트: TLS 관리자 연결 필요" if not sample else "샘플 · 시험 이벤트 연결 없음")
         self.exam_warning = tk.StringVar(value="금지 프로그램 감지 이력 없음 · 감시 정상/시험 준수를 뜻하지 않음")
         self.foreground_warning = tk.StringVar(value="Chrome 이탈·복귀 감지 이력 없음 · 활성 창 감시 상태는 선택 PC 상세에서 확인")
-        columns = ("name", "state", "cpu", "ram", "up", "down", "rtt", "time")
-        self.table = ttk.Treeview(root, columns=columns, show="headings", height=5)
-        for col, title in zip(columns, ("PC 이름 / ID", "상태", "CPU %", "RAM %", "업로드 Mbps", "다운로드 Mbps", "서버 RTT(ms)", "측정 시각 UTC")):
-            self.table.heading(col, text=title)
-            self.table.column(col, width=120, anchor="center")
-        self.table.column("name", width=200)
-        self.table.column("time", width=180)
-        self.table.pack(fill="both", expand=True, padx=15)
+        self.info_windows = {}
+        bar = header(root, "CloudNet Control")
+        ttk.Button(bar, text="연결 상세", style="Header.TButton",
+                   command=self.open_connection_info).pack(side="right")
+        self.online_count = tk.StringVar(value="온라인 0/0대")
+        ttk.Label(bar, textvariable=self.online_count, style="Header.TLabel").pack(side="right", padx=16)
+        self.connection_badge = tk.StringVar(value="● 연결 중" if not sample else "샘플 모드")
+        self.connection_label = ttk.Label(bar, textvariable=self.connection_badge, style="Header.TLabel")
+        self.connection_label.pack(side="right")
+
+        body = ttk.Frame(root, padding=12)
+        body.pack(fill="both", expand=True)
+        body.columnconfigure(1, weight=1)
+        body.rowconfigure(0, weight=1)
+        sidebar = ttk.Frame(body, style="Card.TFrame", padding=1)
+        sidebar.grid(row=0, column=0, sticky="ns", padx=(0, 12))
+        ttk.Label(sidebar, text="PC 목록", style="CardTitle.TLabel", padding=(14, 12)).pack(fill="x")
+        self.table = ttk.Treeview(sidebar, columns=("name", "state"), show=("tree", "headings"), style="PC.Treeview",
+                                  selectmode="browse", height=4)
+        self.table.column("#0", width=118, stretch=False)
+        self.table.column("name", width=105, stretch=False)
+        self.table.column("state", width=108, stretch=False)
+        self.table.heading("#0", text="PC ID", anchor="w")
+        self.table.heading("name", text="이름", anchor="w")
+        self.table.heading("state", text="상태", anchor="w")
+        self.table.tag_configure("online", foreground=GREEN)
+        self.table.tag_configure("offline", foreground=MUTED)
+        scroll = ttk.Scrollbar(sidebar, orient="vertical", command=self.table.yview)
+        scroll.pack(side="right", fill="y")
+        self.table.configure(yscrollcommand=scroll.set)
+        self.table.pack(fill="both", expand=True)
         self.table.bind("<<TreeviewSelect>>", self.show_detail)
-        detail = ttk.LabelFrame(root, text="선택 PC 상세")
-        detail.pack(fill="x", padx=15, pady=10)
-        detail.columnconfigure(1, weight=1)
-        self.details = {}
-        for index, (key, label) in enumerate((
-                ("name", "PC 이름 / ID"), ("state", "상태"),
-                ("up", "업로드 Mbps"), ("down", "다운로드 Mbps"),
-                ("time", "측정 시각 UTC"), ("received", "서버 측정 수신 UTC"),
-                ("age", "측정 후 경과"), ("gui_received", "GUI 목록 수신 UTC"),
-                ("snapshot_age", "목록 수신 후 경과"), ("rtt", "서버 RTT(ms)"),
-                ("foreground", "Chrome 활성 창 감시"))):
-            value = tk.StringVar(value="—")
-            self.details[key] = value
-            ttk.Label(detail, text=label).grid(row=index, column=0, sticky="w", padx=12, pady=2)
-            ttk.Label(detail, textvariable=value).grid(row=index, column=1, sticky="w", padx=12)
-        actions = ttk.Frame(detail, padding=(4, 4))
-        actions.grid(row=0, column=2, rowspan=11, sticky="ne", padx=16, pady=4)
-        self.preview_buttons = []
-        for row, (action, label) in enumerate(POWER_ACTIONS.items()):
-            button = ttk.Button(actions, text=label, state="disabled",
-                                command=lambda action=action: self.confirm_power(action))
-            button.grid(row=0, column=row, sticky="ew", padx=4, pady=4)
-            self.preview_buttons.append(button)
-        self.process_button = ttk.Button(actions, text="프로세스 목록", command=self.open_processes,
-                                         state="disabled")
-        self.process_button.grid(row=1, column=0, sticky="ew", padx=4, pady=4)
-        self.exam_button = ttk.Button(actions, text="시험 모드", command=self.open_exam, state="disabled")
-        self.exam_button.grid(row=1, column=1, sticky="ew", padx=4, pady=4)
-        self.history_button = ttk.Button(actions, text="이력·경고", command=self.open_history,
-                                         state="normal" if sample or context is not None and token else "disabled")
-        self.history_button.grid(row=4, column=0, columnspan=2, sticky="ew", padx=4, pady=4)
-        self.power_status = tk.StringVar()
-        ttk.Label(actions, textvariable=self.power_status, wraplength=264, foreground="#64748b").grid(
-            row=2, column=0, columnspan=2, sticky="w", padx=4, pady=(10, 4))
-        self.process_hint = tk.StringVar()
-        ttk.Label(actions, textvariable=self.process_hint, wraplength=264, foreground="#64748b").grid(
-            row=3, column=0, columnspan=2, sticky="w", padx=4)
-        monitoring = ttk.Frame(root)
-        monitoring.pack(fill="both", expand=True, padx=15)
-        monitoring.columnconfigure(1, weight=1)
-        monitoring.rowconfigure(0, weight=1)
-        usage = ttk.Frame(monitoring)
-        usage.grid(row=0, column=0, sticky="ns", padx=(0, 12))
-        usage.columnconfigure(0, weight=1)
-        usage.rowconfigure((0, 1), weight=1)
+
+        monitoring = ttk.Frame(body)
+        monitoring.grid(row=0, column=1, sticky="nsew")
+        summary = ttk.Frame(monitoring)
+        summary.pack(fill="x", pady=(0, 10))
+        self.selected_id = tk.StringVar(value="PC를 선택하세요")
+        self.selected_name = tk.StringVar()
+        ttk.Label(summary, textvariable=self.selected_id, style="Title.TLabel").pack(side="left")
+        ttk.Label(summary, textvariable=self.selected_name, style="Muted.TLabel").pack(side="left", padx=12)
+        self.details = {key: tk.StringVar(value="—") for key, _ in self.DETAIL_FIELDS}
+        self.selected_state = ttk.Label(summary, textvariable=self.details["state"], padding=(8, 4))
+        self.selected_state.pack(side="left")
+        self.detail_button = ttk.Button(summary, text="상세 정보", command=self.open_device_info, state="disabled")
+        self.detail_button.pack(side="right")
+
+        metrics = ttk.Frame(monitoring)
+        metrics.pack(fill="x", pady=(0, 10))
         self.usage_values = {}
-        for row, (key, title, color) in enumerate((
-                ("cpu", "CPU 사용률", "#2563eb"), ("ram", "RAM 사용률", "#db2777"))):
-            card = ttk.LabelFrame(usage, text=title, padding=(18, 16))
-            card.grid(row=row, column=0, sticky="nsew", pady=4)
+        for column, (key, title) in enumerate((("cpu", "CPU 사용률"), ("ram", "RAM 사용률"), ("rtt", "서버 RTT"))):
+            metrics.columnconfigure(column, weight=1, uniform="metrics")
+            card = ttk.Frame(metrics, style="Card.TFrame", padding=(16, 9))
+            card.grid(row=0, column=column, sticky="nsew", padx=(0, 10) if column < 2 else 0)
             value = tk.StringVar(value="—")
             self.usage_values[key] = value
-            ttk.Label(card, textvariable=value, font=("Segoe UI", 32, "bold"),
-                      foreground=color, anchor="center").pack(fill="x", expand=True)
+            ttk.Label(card, text=title, style="CardTitle.TLabel").pack(anchor="w")
+            ttk.Label(card, textvariable=value, style="Value.TLabel").pack(anchor="w")
+        actions = ttk.Frame(monitoring, style="Card.TFrame", padding=(12, 8))
+        actions.pack(side="bottom", fill="x", pady=(10, 0))
+        toolbar = ttk.Frame(actions, style="Surface.TFrame")
+        toolbar.pack(fill="x")
+        self.history_button = ttk.Button(toolbar, text="이력·경고", command=self.open_history,
+                                         state="normal" if sample or context is not None and token else "disabled")
+        self.history_button.pack(side="left")
+        self.process_button = ttk.Button(toolbar, text="프로세스 목록", command=self.open_processes, state="disabled")
+        self.process_button.pack(side="left", padx=8)
+        self.exam_button = ttk.Button(toolbar, text="시험 모드", command=self.open_exam, state="disabled")
+        self.exam_button.pack(side="left")
+        self.power_button = ttk.Menubutton(toolbar, text="전원 제어", state="disabled")
+        self.power_button.pack(side="right")
+        self.power_menu = tk.Menu(self.power_button, tearoff=False, font=(FONT, 10), foreground=RED)
+        self.power_button.configure(menu=self.power_menu)
+        for action, label in POWER_ACTIONS.items():
+            self.power_menu.add_command(label=label, command=lambda action=action: self.confirm_power(action))
+        self.power_status = tk.StringVar()
+        self.process_hint = tk.StringVar()
+        ttk.Label(actions, textvariable=self.power_status, style="Surface.TLabel",
+                  foreground=MUTED).pack(anchor="w", pady=(6, 0))
         self.charts = LiveCharts(monitoring)
-        self.charts.grid(row=0, column=1, sticky="nsew")
-        ttk.Label(root, text=("샘플 데이터 · 예시 값과 시각 고정 · 서버 통신·실제 제어 없음" if sample else
-                  "실제 측정값 · Agent 2초 수집 / 화면 1초 조회 · 결측값 —")).pack(pady=15)
+        self.charts.pack(fill="both", expand=True)
         root.protocol("WM_DELETE_WINDOW", self.close)
         self.worker = threading.Thread(target=(lambda: None) if sample else self.receive, daemon=True)
         if not sample and context is not None and token:
@@ -143,6 +165,35 @@ class Dashboard:
             mode = "TLS" if self.context else "로컬 개발 / 평문"
             self.connection_details.set(
                 f"서버: {self.host}:{self.port} · 연결 모드: {mode} · 관리자 인증: {self.auth_state}")
+
+    def info_window(self, title, fields):
+        child = self.info_windows.get(title)
+        if child is not None and child.winfo_exists():
+            child.deiconify()
+            child.lift()
+            return
+        detail = len(fields) > 5
+        child = window(self.root, title, "660x510" if detail else "660x280",
+                       (610, 490) if detail else (610, 260))
+        self.info_windows[title] = child
+        header(child, title)
+        card = ttk.Frame(child, style="Card.TFrame", padding=16)
+        card.pack(fill="both", expand=True, padx=14, pady=14)
+        card.columnconfigure(1, weight=1)
+        for row, (label, variable) in enumerate(fields):
+            ttk.Label(card, text=label, style="Surface.TLabel", foreground=MUTED).grid(
+                row=row, column=0, sticky="nw", padx=(0, 14), pady=4)
+            ttk.Label(card, textvariable=variable, style="Surface.TLabel", wraplength=415).grid(
+                row=row, column=1, sticky="w", pady=4)
+        child.bind("<Escape>", lambda event: child.destroy())
+
+    def open_connection_info(self):
+        self.info_window("연결 상세", (("상태", self.status), ("접속 정보", self.connection_details),
+                                     ("목록 동기화", self.event_status), ("시험 이벤트", self.exam_stream)))
+
+    def open_device_info(self):
+        self.info_window("PC 상세 정보", tuple((label, self.details[key]) for key, label in self.DETAIL_FIELDS)
+                         + (("프로세스 제어", self.process_hint),))
 
     def publish(self, value):
         try:
@@ -184,7 +235,7 @@ class Dashboard:
                                     or (device.get("metrics") is not None and not isinstance(device["metrics"], dict))):
                                 raise ValueError("PC 목록 필드 오류")
                             ids.add(device["pc_id"])
-                        self.publish((True, message["devices"]))
+                        self.publish((True, message["devices"], response.get("power_control_v1") is True))
                         self.stop.wait(1)
             except ssl.SSLCertVerificationError:
                 self.publish((False, "인증서 오류 · CA·만료일·서버 이름을 확인한 뒤 다시 실행하세요"))
@@ -205,8 +256,9 @@ class Dashboard:
         if self.closed:
             return
         try:
-            connected, data = self.updates.get_nowait()
+            connected, data, *capabilities = self.updates.get_nowait()
             self.connected = connected
+            self.power_supported = connected and bool(capabilities and capabilities[0])
             if not connected:
                 self.history.disconnect()
                 if not self.exam_stream_connected:
@@ -249,12 +301,21 @@ class Dashboard:
         for position, pc_id in enumerate(sorted(self.devices)):
             device = self.devices[pc_id]
             view = device_view(device, self.connected, now=self.sample_now)
-            values = tuple(view[key] for key in ("name", "state", "cpu", "ram", "up", "down", "rtt", "time"))
+            online = view["state"] == "온라인"
+            values = (device["pc_name"], f'● {view["state"]}')
+            options = dict(text=pc_id, values=values, tags=("online" if online else "offline",))
             if self.table.exists(pc_id):
-                self.table.item(pc_id, values=values)
+                if tuple(self.table.item(pc_id, "values")) != values:
+                    self.table.item(pc_id, **options)
             else:
-                self.table.insert("", "end", iid=pc_id, values=values)
-            self.table.move(pc_id, '', position)
+                self.table.insert("", "end", iid=pc_id, **options)
+            if self.table.index(pc_id) != position:
+                self.table.move(pc_id, "", position)
+        online = sum(bool(device.get("online")) for device in self.devices.values()) if self.connected else 0
+        self.online_count.set(f"온라인 {online}/{len(self.devices)}대")
+        badge = "샘플 모드" if self.sample else ("● 서버 연결됨" if self.connected else self.status.get())
+        self.connection_badge.set(badge if self.connected or self.sample else badge.split(" · ")[0][:42])
+        self.connection_label.configure(foreground="#86efac" if self.connected and not self.sample else "#ffffff")
         if not self.table.selection() and self.devices:
             self.table.selection_set(self.table.get_children()[0])
         self.show_detail()
@@ -323,7 +384,11 @@ class Dashboard:
             variable.set(view.get(key, "—"))
         for key, variable in self.usage_values.items():
             value = view.get(key, "—")
-            variable.set(value + " %" if value != "—" else "—")
+            variable.set(value + " %" if key in ("cpu", "ram") and value != "—" else value)
+        self.selected_id.set(device["pc_id"] if device else "PC를 선택하세요")
+        self.selected_name.set(device["pc_name"] if device else "")
+        self.selected_state.configure(style="Online.TLabel" if view.get("state") == "온라인" else "Muted.TLabel")
+        self.detail_button.configure(state="normal" if device else "disabled")
         points = self.history.samples.get(selection[0], ()) if device else ()
         self.charts.show(points, view.get("state", "PC를 선택하세요"), selection[0] if device else None)
         if self.sample:
@@ -342,12 +407,17 @@ class Dashboard:
         self.process_button.configure(state="normal" if available else "disabled")
         target = self.current_power_target(device)
         operation = self.power_operations.get(device["pc_id"]) if device else None
-        for button in self.preview_buttons:
-            button.configure(state="normal" if target and not (operation and operation.busy) else "disabled")
-        self.power_status.set(
-            f"{POWER_ACTIONS[operation.request['action']]} · {operation.label()}" if operation else
-            "전원 제어 · " + ("모의 실행" if target[0] == "simulate" else "실제 실행") if target else
-            "전원 제어 · 지원되는 온라인 PC 필요")
+        self.power_button.configure(state="normal" if target and not (operation and operation.busy) else "disabled")
+        if operation:
+            mode = "모의 실행" if operation.request["power_control_mode"] == "simulate" else "실제 실행"
+            power_status = f"{POWER_ACTIONS[operation.request['action']]} · {mode} · {operation.label()}"
+        elif target:
+            power_status = "전원 제어 · " + ("모의 실행" if target[0] == "simulate" else "실제 실행")
+        elif self.connected and not self.sample and not self.power_supported:
+            power_status = "전원 제어 · 서버가 지원하지 않습니다"
+        else:
+            power_status = "전원 제어 · 지원되는 온라인 PC 필요"
+        self.power_status.set(power_status)
         can_view_exam = self.sample or (self.context is not None and bool(self.token)
                                        and bool(device or self.exam_store.history))
         self.exam_button.configure(state="normal" if can_view_exam else "disabled")
@@ -386,7 +456,9 @@ class Dashboard:
         self.process_window.window.lift()
 
     def current_power_target(self, device):
-        if self.connected and (self.sample or self.context is not None and self.token):
+        if self.connected and (self.sample or self.power_supported and self.context is not None and self.token):
+            if not device or not device.get("online"):
+                return None
             if device and self.exam_stream_connected:
                 device = self.exam_store.devices.get(device["pc_id"], device)
             return power_target(device, self.sample)
@@ -409,7 +481,7 @@ class Dashboard:
             return
         if self.closed:
             return
-        if (self.current_power_target(self.devices.get(pc_id)) != target
+        if (self.table.selection() != (pc_id,) or self.current_power_target(self.devices.get(pc_id)) != target
                 or self.power_operations.get(pc_id) is not existing):
             messagebox.showinfo("대상 변경", "PC 연결 또는 전원 상태가 바뀌었습니다. 다시 확인해 주세요.",
                                 parent=self.root)

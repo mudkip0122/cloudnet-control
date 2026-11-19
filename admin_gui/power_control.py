@@ -77,7 +77,7 @@ class PowerOperation:
         boot = boot_time(device.get("boot_id"))
         previous = boot_time(self.request["target_boot_id"])
         session = device.get("agent_session_id")
-        if boot and previous and boot != previous and (not self.session_id or session and session != self.session_id):
+        if boot and previous and boot > previous and self.session_id and session and session != self.session_id:
             self.confirmed_boot = True
             if self.awaiting_reboot:
                 self.code = "REBOOT_COMPLETED"
@@ -95,6 +95,10 @@ class PowerOperation:
             "TRANSPORT_ERROR": "연결 오류 · 결과 미확인",
             "INVALID_PROCESS_RESPONSE": "응답 오류 · 결과 미확인",
             "POWER_EXECUTION_FAILED": "실행 실패",
+            "POWER_UNSUPPORTED": "서버가 전원 제어를 지원하지 않습니다",
+            "TARGET_OFFLINE": "요청 거절 · 대상 PC 오프라인",
+            "BOOT_ID_MISMATCH": "요청 거절 · 대상 PC가 재부팅되었습니다",
+            "POWER_MODE_MISMATCH": "요청 거절 · 전원 실행 모드가 변경되었습니다",
         }
         steps = []
         if self.accepted and self.code != "POWER_ACCEPTED":

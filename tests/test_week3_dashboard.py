@@ -1,11 +1,16 @@
 """Real Tk/Matplotlib checks with synthetic PC measurements; no external server."""
-from datetime import datetime, timezone
+import base64
+from datetime import datetime, timedelta, timezone
+from io import BytesIO
 import unittest
 import queue
 from types import SimpleNamespace
 from unittest.mock import patch
 import customtkinter as ctk
+from PIL import Image
 
+from admin_gui.exam_events import timestamp
+from admin_gui.exam_video import LatestCameraFrame
 from admin_gui.main import Dashboard
 from tests.test_gui_exam_events import detection, mode
 from tests.test_gui_foreground import transition, foreground_status
@@ -52,6 +57,69 @@ class WeekThreeTests(unittest.TestCase):
             self.assertEqual(d.charts.pc_id, f'PC-0{i}')
         self.assertNotEqual(d.details['gui_received'].get(), '—')
 
+    def test_camera_video_follows_selected_live_exam_and_expires(self):
+        dashboard = self.dashboard
+        dashboard.context, dashboard.token = object(), "synthetic"
+        frames = LatestCameraFrame()
+        buffer = BytesIO()
+        Image.new("RGB", (30, 20), "red").save(buffer, "JPEG")
+        message = dict(type="EXAM_CAMERA_FRAME", version=1, pc_id="PC-01", format="jpeg",
+                       data=base64.b64encode(buffer.getvalue()).decode("ascii"))
+        dashboard.exam_client = SimpleNamespace(camera_frames=frames, close=lambda: None,
+                                                worker=SimpleNamespace(is_alive=lambda: False))
+        dashboard.exam_stream_connected = True
+        dashboard.exam_generation = 1
+        exam = mode(True)
+        message["exam_id"] = exam["exam_id"]
+        dashboard.exam_store.snapshot([dict(self.devices[0], exam_mode=exam)])
+        dashboard.exam_store.apply_chrome_event(dict(kind="EXAM_CAMERA_STATUS", pc_id="PC-01",
+            status="on", timestamp=self.now.isoformat()))
+        with patch("admin_gui.exam_window.ProcessClient") as factory:
+            factory.return_value.worker.is_alive.return_value = False
+            dashboard.open_exam()
+        window = dashboard.exam_window
+        window.refresh_video()
+
+        def publish(offset, **fields):
+            changed = dict(message, timestamp=(self.now + timedelta(seconds=offset)).isoformat())
+            changed.update(fields)
+            frames.publish(1, changed, timestamp)
+            window.refresh_video()
+
+        publish(1, pc_id="PC-02")
+        publish(1, exam_id="different")
+        publish(1, data="not valid base64")
+        self.assertIsNone(window.video_photo)
+        publish(1)
+        self.assertIsNotNone(window.video_photo)
+        with patch("admin_gui.exam_window.time.monotonic", return_value=window.video_frame.received + 3):
+            window.refresh_video()
+        self.assertIsNone(window.video_photo)
+        publish(1)
+        self.assertIsNone(window.video_photo)
+        publish(2)
+        self.assertIsNotNone(window.video_photo)
+        dashboard.exam_store.apply_chrome_event(dict(kind="EXAM_CAMERA_STATUS", pc_id="PC-01",
+            status="off", timestamp=(self.now + timedelta(seconds=3)).isoformat()))
+        window.refresh_video()
+        self.assertIsNone(window.video_photo)
+        dashboard.exam_store.apply_chrome_event(dict(kind="EXAM_CAMERA_STATUS", pc_id="PC-01",
+            status="on", timestamp=(self.now + timedelta(seconds=4)).isoformat()))
+        window.refresh_video()
+        publish(2)
+        self.assertIsNone(window.video_photo)
+        publish(5)
+        self.assertIsNotNone(window.video_photo)
+        dashboard.exam_stream_connected = False
+        window.refresh_video()
+        self.assertIsNone(window.video_photo)
+        dashboard.exam_stream_connected = True
+        window.refresh_video()
+        publish(6)
+        dashboard.exam_store.snapshot([dict(self.devices[0], exam_mode=mode(False))])
+        window.refresh_video()
+        self.assertIsNone(window.video_photo)
+
     def test_monitor_pc_order_is_fixed_across_arrivals_and_reconnects(self):
         d = self.dashboard
         self.refresh(True, [])
@@ -63,6 +131,29 @@ class WeekThreeTests(unittest.TestCase):
         self.refresh(True, self.devices[1:] + self.devices[:1])
         self.assertEqual(d.table.get_children(), ('PC-01', 'PC-02', 'PC-03'))
         self.assertEqual(d.table.selection(), ('PC-02',))
+
+    def test_power_requires_capability_and_does_not_repeat_while_pending(self):
+        dashboard = self.dashboard
+        dashboard.context, dashboard.token = object(), "synthetic"
+        self.devices[0]["power_control_mode"] = "simulate"
+        self.refresh(True, self.devices)
+        self.assertTrue(dashboard.power_button.instate(["disabled"]))
+        dashboard.publish((True, self.devices, True))
+        self.root.after_cancel(dashboard.timer)
+        dashboard.tick()
+        self.assertTrue(dashboard.power_button.instate(["!disabled"]))
+        power_client = SimpleNamespace(submit=lambda request: None, close=lambda: None,
+                                       worker=SimpleNamespace(is_alive=lambda: False))
+        dashboard.power_client = power_client
+        with patch.object(power_client, "submit") as submit, \
+                patch("admin_gui.main.messagebox.askokcancel", return_value=True) as confirm:
+            dashboard.confirm_power("REBOOT_PC")
+            dashboard.confirm_power("REBOOT_PC")
+        submit.assert_called_once()
+        confirm.assert_called_once()
+        self.assertEqual(submit.call_args.args[0]["target_id"], "PC-01")
+        self.assertIn("PC-01", confirm.call_args.args[1])
+        self.assertTrue(dashboard.power_button.instate(["disabled"]))
 
     def test_exam_pc_buttons_route_exact_target_and_ignore_stale_results(self):
         d = self.dashboard
@@ -133,7 +224,7 @@ class WeekThreeTests(unittest.TestCase):
         self.refresh(False, 'synthetic disconnect')
         self.assertEqual(d.usage_values['cpu'].get(), '—')
         self.assertTrue(d.process_button.instate(['disabled']))
-        self.assertTrue(all(button.instate(['disabled']) for button in d.preview_buttons))
+        self.assertTrue(d.power_button.instate(['disabled']))
         self.assertIn('이전 측정 기록', d.charts.notice.cget('text'))
         self.assertEqual(len(d.history.samples['PC-01']), 1)
 
