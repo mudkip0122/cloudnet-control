@@ -118,6 +118,7 @@ class MonitoringServer:
         self.camera_last_frame = {}
         self.connections = {}
         self.pending_commands = {}
+        self.command_sweeper = None
         self.seen_commands = {}
         self.metrics_received_at = {}
         self.exam_states = {}
@@ -185,6 +186,35 @@ class MonitoringServer:
     def snapshot(self):
         with self.lock:
             return {"type": "DEVICE_LIST", "devices": [self.device_snapshot(pc_id) for pc_id in self.devices]}
+
+    def sweep_commands(self):
+        while True:
+            time.sleep(.2)
+            expired = []
+            with self.lock:
+                now = time.monotonic()
+                for command_id, pending in list(self.pending_commands.items()):
+                    if pending['until'] > now:
+                        continue
+                    del self.pending_commands[command_id]
+                    if self.audit is not None:
+                        try:
+                            self.audit.unconfirmed(command_id, 'timeout_unconfirmed')
+                        except sqlite3.Error:
+                            LOG.error('Could not record command timeout')
+                    session = self.connections.get(pending['admin'])
+                    if session is not None:
+                        expired.append((session, {'type': 'COMMAND_RESULT', 'pc_id': pending['target'],
+                                                 'command_id': command_id, 'ok': False, 'code': 'COMMAND_TIMEOUT'}))
+                if not self.pending_commands:
+                    self.command_sweeper = None
+                    done = True
+                else:
+                    done = False
+            for session, result in expired:
+                session.notify(result)
+            if done:
+                return
 
     def handle(self, conn):
         pc_id = None
@@ -385,6 +415,8 @@ class MonitoringServer:
         elif request.get("action") not in ("LIST_PROCESSES", "STOP_PROCESS", "STOP_PROCESSES",
                                            "SET_EXAM_MODE", "GET_EXAM_STATUS", *POWER_ACTIONS):
             error = "UNSUPPORTED_ACTION"
+        elif any(key in request for key in ('shell', 'command', 'cmd', 'args')):
+            error = "INVALID_COMMAND_FIELDS"
         error = error or command_error(request)
         try:
             expires = datetime.fromisoformat(request["expires_at"].replace("Z", "+00:00"))
@@ -397,7 +429,6 @@ class MonitoringServer:
         now = time.monotonic()
         with self.lock:
             self.seen_commands = {key: until for key, until in self.seen_commands.items() if until > now}
-            self.pending_commands = {key: value for key, value in self.pending_commands.items() if value["until"] > now}
             agent = self.sessions.get(target)
             if agent is None:
                 error = error or "TARGET_OFFLINE"
@@ -427,6 +458,9 @@ class MonitoringServer:
                 self.pending_commands[command_id] = {"admin": admin, "target": target, "agent": agent,
                     "until": now + remaining, "pages": None, "received": set(), "action": request["action"],
                     "request": request, "power_accepted": False}
+                if self.command_sweeper is None:
+                    self.command_sweeper = threading.Thread(target=self.sweep_commands, daemon=True)
+                    self.command_sweeper.start()
         if error is not None:
             self.send(admin, {"type": "COMMAND_RESULT", "pc_id": target, "command_id": command_id,
                               "ok": False, "code": error})
@@ -436,6 +470,11 @@ class MonitoringServer:
         except OSError:
             with self.lock:
                 self.pending_commands.pop(command_id, None)
+                if self.audit is not None:
+                    try:
+                        self.audit.unconfirmed(command_id, 'delivery_unconfirmed')
+                    except sqlite3.Error:
+                        LOG.error('Could not record uncertain command delivery')
             self.send(admin, {"type": "COMMAND_RESULT", "pc_id": target, "command_id": command_id,
                               "ok": False, "code": "TARGET_OFFLINE"})
 
@@ -452,7 +491,6 @@ class MonitoringServer:
             if pending["target"] != pc_id or pending["agent"] is not agent:
                 raise ValueError("Command result session mismatch")
             if pending["until"] <= time.monotonic():
-                del self.pending_commands[command_id]
                 return
             command_result(pending["request"], message)
             finished = True

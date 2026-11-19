@@ -25,6 +25,11 @@ class AuditStore:
                 request TEXT NOT NULL, result TEXT, outcome TEXT NOT NULL, result_received_at TEXT);
             CREATE INDEX IF NOT EXISTS exam_events_received ON exam_events(received_epoch);
             CREATE INDEX IF NOT EXISTS command_audit_received ON command_audit(received_epoch);
+            CREATE TABLE IF NOT EXISTS command_transitions (
+                id INTEGER PRIMARY KEY, command_id TEXT NOT NULL, received_epoch REAL NOT NULL,
+                stage TEXT NOT NULL, code TEXT);
+            CREATE INDEX IF NOT EXISTS command_transitions_received ON command_transitions(received_epoch);
+            CREATE INDEX IF NOT EXISTS command_transitions_command ON command_transitions(command_id, id);
             CREATE TABLE IF NOT EXISTS metric_history (id INTEGER PRIMARY KEY, pc_id TEXT NOT NULL, received_epoch REAL NOT NULL, payload TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS metric_history_lookup ON metric_history(pc_id, received_epoch, id);
             CREATE TABLE IF NOT EXISTS monitoring_events (id INTEGER PRIMARY KEY, pc_id TEXT NOT NULL, received_epoch REAL NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL);
@@ -47,6 +52,7 @@ class AuditStore:
                 return
             self.db.execute("DELETE FROM exam_events WHERE received_epoch < ?", (cutoff,))
             self.db.execute("DELETE FROM command_audit WHERE received_epoch < ?", (cutoff,))
+            self.db.execute("DELETE FROM command_transitions WHERE received_epoch < ?", (cutoff,))
             self.db.execute("DELETE FROM metric_history WHERE received_epoch < ?", (cutoff,))
             self.db.execute("DELETE FROM monitoring_events WHERE received_epoch < ?", (cutoff,))
             self.next_prune = time.monotonic() + 60
@@ -82,6 +88,10 @@ class AuditStore:
         # not a claim about the unknown time at which the previous process stopped.
         with self.lock, self.db:
             now = time.time()
+            interrupted = self.db.execute("SELECT command_id FROM command_audit WHERE outcome IN ('accepted_result_unconfirmed', 'partial_result_received')").fetchall()
+            for (command_id,) in interrupted:
+                self._command_transition(command_id, 'server_restart_unconfirmed', None, now)
+            self.db.execute("UPDATE command_audit SET outcome='server_restart_unconfirmed' WHERE outcome IN ('accepted_result_unconfirmed', 'partial_result_received')")
             for (pc_id,) in self.db.execute("SELECT pc_id FROM devices WHERE online=1").fetchall():
                 self._transition(pc_id, 'DEVICE_OFFLINE', 'raised', str(uuid4()), now)
             self.db.execute("UPDATE devices SET online=0 WHERE online=1")
@@ -95,8 +105,8 @@ class AuditStore:
                 self._transition(pc_id, 'DEVICE_OFFLINE', 'resolved', existing[0], now)
             self.db.execute("INSERT INTO devices VALUES (?, ?, ?, 1) ON CONFLICT(pc_id) DO UPDATE SET pc_name=excluded.pc_name, last_seen_epoch=excluded.last_seen_epoch, online=1", (pc_id, pc_name, now))
             if boot_id is not None:
-                pending = self.db.execute("SELECT command_id, request, result FROM command_audit WHERE pc_id=? AND received_epoch>=? AND received_epoch<=? AND outcome IN ('partial_result_received', 'result_received') AND reboot_confirmed_at IS NULL", (pc_id, now - 300, now)).fetchall()
-                for command_id, raw_request, raw_result in pending:
+                pending = self.db.execute("SELECT command_id, request, result, received_epoch FROM command_audit WHERE pc_id=? AND received_epoch>=? AND received_epoch<=? AND outcome IN ('partial_result_received', 'result_received', 'timeout_unconfirmed', 'server_restart_unconfirmed') AND reboot_confirmed_at IS NULL", (pc_id, now - 300, now)).fetchall()
+                for command_id, raw_request, raw_result, requested_at in pending:
                     request = json.loads(raw_request)
                     result = json.loads(raw_result) if raw_result else {}
                     old_boot = request.get('target_boot_id')
@@ -105,8 +115,10 @@ class AuditStore:
                             ('POWER_ACCEPTED', 'POWER_EXECUTION_STARTED', 'POWER_EXECUTION_UNKNOWN')):
                         old_time = datetime.fromisoformat(old_boot.replace('Z', '+00:00'))
                         new_time = datetime.fromisoformat(boot_id.replace('Z', '+00:00'))
-                        if old_time.tzinfo is not None and new_time.tzinfo is not None and old_time != new_time:
+                        if (old_time.tzinfo is not None and new_time.tzinfo is not None
+                                and new_time > old_time and new_time.timestamp() >= requested_at - 1):
                             self.db.execute("UPDATE command_audit SET reboot_confirmed_at=?, observed_boot_id=? WHERE command_id=?", (datetime.fromtimestamp(now, timezone.utc).isoformat(), boot_id, command_id))
+                            self._command_transition(command_id, 'boot_changed', None, now)
 
     def disconnect_device(self, pc_id, now):
         self.prune()
@@ -158,7 +170,14 @@ class AuditStore:
                 VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (request["command_id"], request["target_id"], executor, received_at, time.time(),
                  json.dumps(clean, allow_nan=False), "accepted_result_unconfirmed"))
-            return cursor.rowcount == 1
+            if cursor.rowcount == 1:
+                self._command_transition(request['command_id'], 'request_accepted', None, time.time())
+                return True
+            return False
+
+    def _command_transition(self, command_id, stage, code, received_epoch):
+        self.db.execute("INSERT INTO command_transitions(command_id, received_epoch, stage, code) VALUES (?, ?, ?, ?)",
+                        (command_id, received_epoch, stage, code))
 
     def result(self, command_id, message, complete=True):
         # Store a bounded result, excluding any unexpected Agent-supplied fields.
@@ -169,6 +188,15 @@ class AuditStore:
             self.db.execute("UPDATE command_audit SET result=?, outcome=?, result_received_at=? WHERE command_id=?",
                 (json.dumps(clean, allow_nan=False), "result_received" if complete else "partial_result_received",
                  datetime.now(timezone.utc).isoformat(), command_id))
+            self._command_transition(command_id, 'result' if complete else 'partial_result', clean.get('code'), time.time())
+
+    def unconfirmed(self, command_id, outcome):
+        if outcome not in ('timeout_unconfirmed', 'delivery_unconfirmed'):
+            raise ValueError('Invalid command outcome')
+        with self.lock, self.db:
+            cursor = self.db.execute("UPDATE command_audit SET outcome=? WHERE command_id=? AND outcome IN ('accepted_result_unconfirmed', 'partial_result_received')", (outcome, command_id))
+            if cursor.rowcount:
+                self._command_transition(command_id, outcome, None, time.time())
 
     def close(self):
         with self.lock:
