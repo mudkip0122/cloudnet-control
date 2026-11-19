@@ -56,6 +56,7 @@ class Dashboard:
         self.exam_stream_connected = False
         self.exam_gap = False
         self.power_client = None
+        self.power_supported = False
         self.power_operations = {}
         root.title("CloudNet Control — " + ("SAMPLE DATA / OFFLINE" if sample else "PC 모니터링"))
         root.geometry("1240x820")
@@ -234,7 +235,7 @@ class Dashboard:
                                     or (device.get("metrics") is not None and not isinstance(device["metrics"], dict))):
                                 raise ValueError("PC 목록 필드 오류")
                             ids.add(device["pc_id"])
-                        self.publish((True, message["devices"]))
+                        self.publish((True, message["devices"], response.get("power_control_v1") is True))
                         self.stop.wait(1)
             except ssl.SSLCertVerificationError:
                 self.publish((False, "인증서 오류 · CA·만료일·서버 이름을 확인한 뒤 다시 실행하세요"))
@@ -255,8 +256,9 @@ class Dashboard:
         if self.closed:
             return
         try:
-            connected, data = self.updates.get_nowait()
+            connected, data, *capabilities = self.updates.get_nowait()
             self.connected = connected
+            self.power_supported = connected and bool(capabilities and capabilities[0])
             if not connected:
                 self.history.disconnect()
                 if not self.exam_stream_connected:
@@ -406,10 +408,16 @@ class Dashboard:
         target = self.current_power_target(device)
         operation = self.power_operations.get(device["pc_id"]) if device else None
         self.power_button.configure(state="normal" if target and not (operation and operation.busy) else "disabled")
-        self.power_status.set(
-            f"{POWER_ACTIONS[operation.request['action']]} · {operation.label()}" if operation else
-            "전원 제어 · " + ("모의 실행" if target[0] == "simulate" else "실제 실행") if target else
-            "전원 제어 · 지원되는 온라인 PC 필요")
+        if operation:
+            mode = "모의 실행" if operation.request["power_control_mode"] == "simulate" else "실제 실행"
+            power_status = f"{POWER_ACTIONS[operation.request['action']]} · {mode} · {operation.label()}"
+        elif target:
+            power_status = "전원 제어 · " + ("모의 실행" if target[0] == "simulate" else "실제 실행")
+        elif self.connected and not self.sample and not self.power_supported:
+            power_status = "전원 제어 · 서버가 지원하지 않습니다"
+        else:
+            power_status = "전원 제어 · 지원되는 온라인 PC 필요"
+        self.power_status.set(power_status)
         can_view_exam = self.sample or (self.context is not None and bool(self.token)
                                        and bool(device or self.exam_store.history))
         self.exam_button.configure(state="normal" if can_view_exam else "disabled")
@@ -448,7 +456,9 @@ class Dashboard:
         self.process_window.window.lift()
 
     def current_power_target(self, device):
-        if self.connected and (self.sample or self.context is not None and self.token):
+        if self.connected and (self.sample or self.power_supported and self.context is not None and self.token):
+            if not device or not device.get("online"):
+                return None
             if device and self.exam_stream_connected:
                 device = self.exam_store.devices.get(device["pc_id"], device)
             return power_target(device, self.sample)
@@ -471,7 +481,7 @@ class Dashboard:
             return
         if self.closed:
             return
-        if (self.current_power_target(self.devices.get(pc_id)) != target
+        if (self.table.selection() != (pc_id,) or self.current_power_target(self.devices.get(pc_id)) != target
                 or self.power_operations.get(pc_id) is not existing):
             messagebox.showinfo("대상 변경", "PC 연결 또는 전원 상태가 바뀌었습니다. 다시 확인해 주세요.",
                                 parent=self.root)

@@ -132,6 +132,29 @@ class WeekThreeTests(unittest.TestCase):
         self.assertEqual(d.table.get_children(), ('PC-01', 'PC-02', 'PC-03'))
         self.assertEqual(d.table.selection(), ('PC-02',))
 
+    def test_power_requires_capability_and_does_not_repeat_while_pending(self):
+        dashboard = self.dashboard
+        dashboard.context, dashboard.token = object(), "synthetic"
+        self.devices[0]["power_control_mode"] = "simulate"
+        self.refresh(True, self.devices)
+        self.assertTrue(dashboard.power_button.instate(["disabled"]))
+        dashboard.publish((True, self.devices, True))
+        self.root.after_cancel(dashboard.timer)
+        dashboard.tick()
+        self.assertTrue(dashboard.power_button.instate(["!disabled"]))
+        power_client = SimpleNamespace(submit=lambda request: None, close=lambda: None,
+                                       worker=SimpleNamespace(is_alive=lambda: False))
+        dashboard.power_client = power_client
+        with patch.object(power_client, "submit") as submit, \
+                patch("admin_gui.main.messagebox.askokcancel", return_value=True) as confirm:
+            dashboard.confirm_power("REBOOT_PC")
+            dashboard.confirm_power("REBOOT_PC")
+        submit.assert_called_once()
+        confirm.assert_called_once()
+        self.assertEqual(submit.call_args.args[0]["target_id"], "PC-01")
+        self.assertIn("PC-01", confirm.call_args.args[1])
+        self.assertTrue(dashboard.power_button.instate(["disabled"]))
+
     def test_exam_pc_buttons_route_exact_target_and_ignore_stale_results(self):
         d = self.dashboard
         d.context, d.token = object(), 'synthetic'

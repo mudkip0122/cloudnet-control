@@ -105,6 +105,8 @@ class HistoryWindow:
                 metrics, alerts = future.result()
             except ValueError as exc:
                 self.reset(f"조회 실패 · {exc}")
+            except TimeoutError:
+                self.reset("조회 실패 · 서버 응답 시간 초과")
             except (OSError, EOFError, OverflowError, RecursionError):
                 self.reset("조회 실패 · 연결 또는 서버 응답 오류")
             else:

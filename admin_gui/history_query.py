@@ -32,9 +32,15 @@ def collect_history(request, receive):
                 or reply["version"] != 1):
             raise ValueError("이력 응답의 요청 식별 정보가 일치하지 않습니다.")
         if reply.get("ok") is False:
-            if reply.get("code") == "HISTORY_UNSUPPORTED":
-                raise ValueError("서버가 이력 조회를 지원하지 않습니다.")
-            raise ValueError("서버가 이력 조회를 완료하지 못했습니다.")
+            errors = {
+                "HISTORY_UNSUPPORTED": "서버가 이력 조회를 지원하지 않습니다.",
+                "HISTORY_TOO_LARGE": "결과가 너무 많습니다. 더 짧은 기간으로 조회하세요.",
+                "INVALID_REQUEST": "서버가 PC ID 또는 조회 기간을 거절했습니다.",
+                "STORAGE_UNAVAILABLE": "서버 이력 저장소를 사용할 수 없습니다.",
+            }
+            code = reply.get("code")
+            detail = errors.get(code) if isinstance(code, str) else None
+            raise ValueError(detail or "서버가 이력 조회를 완료하지 못했습니다.")
         metrics, events = reply.get("metrics"), reply.get("events")
         if (reply.get("ok") is not True or type(reply.get("page")) is not int or reply["page"] != page
                 or type(reply.get("done")) is not bool or not isinstance(metrics, list)

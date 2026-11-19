@@ -135,6 +135,9 @@ class ProcessClient:
                 response = recv_message(conn)
                 if response.get("type") != "REGISTER_RESULT" or response.get("ok") is not True:
                     raise ProcessProtocolError("관리자 인증 실패")
+                power = request["action"] in POWER_ACTIONS
+                if power and response.get("power_control_v1") is not True:
+                    return {"ok": False, "code": "POWER_UNSUPPORTED"}
                 send_message(conn, request)
                 deadline = time.monotonic() + self.timeout
                 assembly = ProcessPages(request["command_id"], request["target_id"])
@@ -158,7 +161,7 @@ class ProcessClient:
                         if rows is None:
                             continue
                         return {"ok": True, "code": "PROCESS_LIST", "processes": rows}
-                    if request["action"] in POWER_ACTIONS:
+                    if power:
                         code = message.get("code")
                         if not isinstance(code, str) or not code.strip() or len(code) > 128:
                             raise ProcessProtocolError("전원 제어 결과 코드 오류")
@@ -170,7 +173,7 @@ class ProcessClient:
                             deadline = max(deadline, time.monotonic() + 5)
                             continue
                         if (message.get("terminal") is False or message["ok"] and
-                                (message.get("terminal") is not True or code != (
+                                (not accepted or message.get("terminal") is not True or code != (
                                     "POWER_SIMULATED" if request["power_control_mode"] == "simulate"
                                     else "POWER_EXECUTION_STARTED"))):
                             raise ProcessProtocolError("전원 제어 응답 오류")
