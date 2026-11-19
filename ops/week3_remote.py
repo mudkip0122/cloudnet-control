@@ -9,6 +9,7 @@ import tarfile
 import tempfile
 import time
 import zipfile
+import sqlite3
 
 ROOT = Path("/home/ubuntu/cloudnet-direct")
 UNIT = "cloudnet-control-launcher.service"
@@ -28,7 +29,7 @@ def protected_hashes():
             if p.is_file() and "__pycache__" not in p.parts}
 
 
-def verify():
+def verify(required=()):
     # Authenticate using files on the instance; never return credentials.
     sys.path.insert(0, str(ROOT))
     import socket
@@ -57,6 +58,15 @@ def verify():
             registered = recv_message(conn)
             if registered.get("ok") is not True:
                 raise RuntimeError("Administrator authentication failed")
+            if not all(registered.get(key) is True for key in required):
+                raise RuntimeError("Required server capabilities missing")
+            if 'history_v1' in required:
+                end = datetime.now(timezone.utc)
+                send_message(conn, dict(type="GET_HISTORY", version=1, request_id="deployment-check",
+                    pc_id="deployment-check", start_at=(end - timedelta(minutes=10)).isoformat(), end_at=end.isoformat()))
+                result = recv_message(conn)
+                if result.get('type') != 'HISTORY_RESULT' or result.get('ok') is not True or not result.get('done'):
+                    raise RuntimeError("History read check failed")
             snapshots = []
             for _ in range(2):
                 send_message(conn, dict(type="LIST_DEVICES"))
@@ -99,7 +109,8 @@ def verify():
                             break
                 results.append(result)
             print(json.dumps({"tls_admin": True, "capabilities": {key: registered.get(key) for key in
-                ("exam_events_v1", "exam_control_v1", "exam_foreground_v1")}, "devices": results}))
+                ("exam_events_v1", "exam_control_v1", "exam_foreground_v1", "exam_chrome_timeline_v1",
+                 "history_v1", "power_control_v1", "exam_camera_stream_v1")}, "devices": results}))
 
 
 def deploy(revision):
@@ -129,8 +140,19 @@ def deploy(revision):
             package.extractall(stage)
         python = str(ROOT / ".venv/bin/python")
         run([python, "-m", "compileall", "-q", str(stage / "server"), str(stage / "common")])
+        new_sources = [path.relative_to(stage) for path in stage.rglob('*.py')
+                       if not (ROOT / path.relative_to(stage)).exists()]
         try:
             run(["sudo", "-n", "systemctl", "stop", UNIT])
+            database = Path('/var/lib/cloudnet-control/server-audit.sqlite3')
+            if not database.is_file():
+                raise RuntimeError('Existing audit DB is missing')
+            db_backup = backup_dir / 'server-audit.sqlite3'
+            with sqlite3.connect(f'file:{database}?mode=ro', uri=True) as source, sqlite3.connect(db_backup) as destination:
+                source.backup(destination)
+                if destination.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
+                    raise RuntimeError('Audit DB backup failed integrity check')
+            db_backup.chmod(0o600)
             # Only replace Python source files owned by A; preserve all other trees.
             for path in stage.rglob("*.py"):
                 target = ROOT / path.relative_to(stage)
@@ -157,11 +179,13 @@ def deploy(revision):
             (backup_dir / "protected-files-unchanged.txt").write_text("true\n")
             print(json.dumps(dict(deployed=revision, backup=str(backup_dir), protected_files_unchanged=True,
                                   active=run(["systemctl", "is-active", UNIT]).stdout.strip())))
-            verify()
+            verify(('exam_events_v1', 'exam_chrome_timeline_v1', 'history_v1', 'power_control_v1', 'exam_camera_stream_v1'))
         except BaseException:
             run(["sudo", "-n", "systemctl", "stop", UNIT], check=False)
             with tarfile.open(backup) as bundle:
                 bundle.extractall(ROOT, filter="data")
+            for name in new_sources:
+                (ROOT / name).unlink(missing_ok=True)
             if previous_dropin is not None:
                 run(["sudo", "-n", "install", "-m", "0644", str(backup_dir / "week3-audit.conf"), str(DROPIN)])
             else:

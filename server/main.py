@@ -16,6 +16,8 @@ from common.protocol import recv_message, send_message
 from common.security import load_auth, loopback
 from server.audit import AuditStore
 from server.contracts import command_error, command_result, exam_event, rtt_fields, text
+from server.contracts import exam_id
+from server.camera import camera_frame
 
 LOG = logging.getLogger("cloudnet.server")
 POWER_ACTIONS = ("SHUTDOWN_PC", "REBOOT_PC")
@@ -29,6 +31,8 @@ class Session:
         self.notifications = queue.Queue(maxsize=32)
         self.stopped = threading.Event()
         self.writer = None
+        self.camera_writer = None
+        self.camera_frames = queue.Queue(maxsize=1)
         self.executor_id = str(uuid4())
 
     def send(self, message):
@@ -63,6 +67,35 @@ class Session:
             # A stalled administrator must not delay Agent registration or expiry.
             self.close()
 
+    def start_camera(self, allowed):
+        def write():
+            while not self.stopped.is_set():
+                try:
+                    message, queued = self.camera_frames.get(timeout=.2)
+                except queue.Empty:
+                    continue
+                if time.monotonic() - queued > 3 or not allowed(message):
+                    continue
+                try:
+                    self.send(message)
+                except (OSError, ValueError):
+                    self.close()
+        self.camera_writer = threading.Thread(target=write, daemon=True)
+        self.camera_writer.start()
+
+    def notify_camera(self, message):
+        try:
+            self.camera_frames.put_nowait((message, time.monotonic()))
+        except queue.Full:
+            try:
+                self.camera_frames.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self.camera_frames.put_nowait((message, time.monotonic()))
+            except queue.Full:
+                pass
+
 
 def utc_now():
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -80,6 +113,9 @@ class MonitoringServer:
         self.sessions = {}
         self.admins = set()
         self.exam_admins = set()
+        self.camera_admins = {}
+        self.camera_status = {}
+        self.camera_last_frame = {}
         self.connections = {}
         self.pending_commands = {}
         self.seen_commands = {}
@@ -175,6 +211,12 @@ class MonitoringServer:
             exam_supported = self.audit is not None and self.auth is not None and isinstance(conn, ssl.SSLSocket)
             if subscribe_exam and not exam_supported:
                 raise ValueError("Exam subscription requires TLS, authentication and audit storage")
+            camera_scope = message.get("subscribe_camera")
+            if camera_scope is not None and (role != 'admin' or not exam_supported or
+                    not isinstance(camera_scope, dict) or set(camera_scope) != {'pc_id', 'exam_id'} or
+                    not text(camera_scope.get('pc_id')) or not exam_id(camera_scope.get('exam_id')) or
+                    camera_scope['pc_id'] not in self.auth['agents']):
+                raise ValueError("Camera subscription requires authorized TLS admin and PC/exam scope")
             if self.auth is not None:
                 candidate_id = message.get("pc_id")
                 expected = (self.auth["admin_token"] if role == "admin" else
@@ -211,6 +253,8 @@ class MonitoringServer:
                     self.exam_states.pop(pc_id, None)
                     self.event_rates.pop(pc_id, None)
                     self.rtt_received_at.pop(pc_id, None)
+                    self.camera_status.pop(pc_id, None)
+                    self.camera_last_frame.pop(pc_id, None)
                     for state in self.alert_states.get(pc_id, {}).values():
                         state.update(since=None, last=None)
                     self.devices[pc_id] = {"pc_id": pc_id, "pc_name": message["pc_name"],
@@ -225,7 +269,8 @@ class MonitoringServer:
                 response.update(heartbeat_interval=min(5, self.heartbeat_timeout / 3), rtt_v1=True)
             if exam_supported:
                 response.update(exam_events_v1=True, exam_control_v1=True, exam_foreground_v1=True,
-                                exam_chrome_timeline_v1=True, history_v1=True, power_control_v1=True)
+                                exam_chrome_timeline_v1=True, history_v1=True, power_control_v1=True,
+                                exam_camera_stream_v1=True)
             session.send(response)
             if role == "admin":
                 session.start_notifications()
@@ -235,6 +280,10 @@ class MonitoringServer:
             if role == "admin" and subscribe_exam:
                 with self.lock:
                     self.exam_admins.add(session)
+            if camera_scope is not None:
+                with self.lock:
+                    self.camera_admins[session] = (camera_scope['pc_id'], camera_scope['exam_id'])
+                session.start_camera(lambda frame: self.camera_allowed(session, frame))
             LOG.info("Registered role=%s pc_id=%s", role, pc_id)
             activity[0] = time.monotonic()
             watcher = threading.Thread(target=self.watch_activity,
@@ -264,6 +313,10 @@ class MonitoringServer:
                     session.send({"type": "RTT_PONG", "pc_id": pc_id, "probe_id": message["probe_id"]})
                 elif role == "agent" and message["type"] == "EXAM_EVENT":
                     self.receive_exam_event(pc_id, message)
+                elif role == "agent" and message["type"] == "EXAM_CAMERA_FRAME":
+                    if not exam_supported:
+                        raise ValueError('Camera frames require authenticated TLS')
+                    self.receive_camera_frame(pc_id, message)
                 elif role == "agent" and message["type"] == "HEARTBEAT":
                     if message.get("pc_id") != pc_id:
                         raise ValueError("PC ID must match the registered session")
@@ -288,6 +341,7 @@ class MonitoringServer:
             with self.lock:
                 self.admins.discard(session)
                 self.exam_admins.discard(session)
+                self.camera_admins.pop(session, None)
                 self.connections.pop(conn, None)
                 # Retain accepted requests until result/expiry even if their GUI
                 # closes: audit and other supervisors still need the outcome.
@@ -298,6 +352,8 @@ class MonitoringServer:
                         del self.sessions[pc_id]
                         self.devices[pc_id]["online"] = False
                         self.exam_states.pop(pc_id, None)
+                        self.camera_status.pop(pc_id, None)
+                        self.camera_last_frame.pop(pc_id, None)
                         self.devices[pc_id]["exam_state_received_at"] = None
                         for state in self.alert_states.get(pc_id, {}).values():
                             state.update(since=None, last=None)
@@ -314,6 +370,8 @@ class MonitoringServer:
                 watcher.join(timeout=1)
             if session.writer is not None:
                 session.writer.join(timeout=1)
+            if session.camera_writer is not None:
+                session.camera_writer.join(timeout=1)
 
     def route_command(self, admin, request):
         command_id, target = request.get("command_id"), request.get("target_id")
@@ -433,6 +491,8 @@ class MonitoringServer:
             if (pending["action"] in ("SET_EXAM_MODE", "GET_EXAM_STATUS")
                     and message.get("ok") is True and isinstance(message.get("exam_mode"), dict)):
                 self.exam_states[pc_id] = dict(message["exam_mode"])
+                if not message["exam_mode"].get("enabled"):
+                    self.camera_status.pop(pc_id, None)
                 if pc_id in self.devices:
                     self.devices[pc_id]["exam_state_received_at"] = utc_now()
                     mode_changed = True
@@ -464,6 +524,8 @@ class MonitoringServer:
         mode_changed = False
         with self.lock:
             mode = self.exam_states.get(pc_id)
+            if clean['kind'] == 'EXAM_CAMERA_STATUS':
+                self.camera_status[pc_id] = (clean['exam_id'], clean['status'])
             if (clean["kind"] == "MONITOR_STATUS" and mode is not None
                     and mode.get("enabled") and mode.get("exam_id") == clean["exam_id"]):
                 self.exam_states[pc_id] = dict(mode, monitor_status=clean["status"])
@@ -475,6 +537,30 @@ class MonitoringServer:
         if mode_changed:
             self.notify_status(pc_id)
         return True
+
+    def camera_allowed(self, session, frame):
+        with self.lock:
+            pc_id, exam = frame['pc_id'], frame['exam_id']
+            mode = self.exam_states.get(pc_id) or {}
+            return (not session.stopped.is_set() and self.camera_admins.get(session) == (pc_id, exam)
+                    and pc_id in self.sessions and mode.get('enabled') is True and mode.get('exam_id') == exam
+                    and self.camera_status.get(pc_id) == (exam, 'on'))
+
+    def receive_camera_frame(self, pc_id, message):
+        clean = camera_frame(message, pc_id)
+        now = time.monotonic()
+        with self.lock:
+            mode = self.exam_states.get(pc_id) or {}
+            if (not mode.get('enabled') or mode.get('exam_id') != clean['exam_id']
+                    or self.camera_status.get(pc_id) != (clean['exam_id'], 'on')):
+                return
+            if now - self.camera_last_frame.get(pc_id, -1e9) < .45:
+                return
+            self.camera_last_frame[pc_id] = now
+            viewers = tuple(session for session, scope in self.camera_admins.items()
+                            if scope == (pc_id, clean['exam_id']))
+        for viewer in viewers:
+            viewer.notify_camera(clean)
 
     def update_metrics(self, pc_id, message):
         if message.get("pc_id") != pc_id:

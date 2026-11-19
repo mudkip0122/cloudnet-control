@@ -3,6 +3,7 @@ from pathlib import Path
 import subprocess
 import sys
 import zipfile
+import hashlib
 
 ROOT = Path(__file__).resolve().parents[1]
 SSH = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=yes",
@@ -22,6 +23,9 @@ def main():
             for folder in ("server", "common"):
                 for path in (ROOT / folder).rglob("*.py"):
                     package.write(path, path.relative_to(ROOT).as_posix())
+        dirty = bool(subprocess.check_output(['git', 'status', '--porcelain', '--', 'server', 'common'], cwd=ROOT).strip())
+        print('source_base=' + revision + ' uncommitted_A_source=' + str(dirty).lower()
+              + ' archive_sha256=' + hashlib.sha256(archive.read_bytes()).hexdigest(), flush=True)
         subprocess.run(["scp", *SSH, str(archive), HOST + ":/home/ubuntu/" + archive.name], check=True)
     remote = ["/home/ubuntu/cloudnet-direct/.venv/bin/python", "-", action]
     if action == "deploy":
