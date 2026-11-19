@@ -10,6 +10,7 @@ import ssl
 import threading
 import time
 import sqlite3
+import json
 from uuid import uuid4
 from common.protocol import recv_message, send_message
 from common.security import load_auth, loopback
@@ -17,6 +18,7 @@ from server.audit import AuditStore
 from server.contracts import command_error, command_result, exam_event, rtt_fields, text
 
 LOG = logging.getLogger("cloudnet.server")
+POWER_ACTIONS = ("SHUTDOWN_PC", "REBOOT_PC")
 
 
 class Session:
@@ -85,6 +87,13 @@ class MonitoringServer:
         self.exam_states = {}
         self.event_rates = {}
         self.rtt_received_at = {}
+        self.alert_states = {}
+        if self.audit is not None:
+            for pc_id, kind, alert_id in self.audit.recover_after_restart():
+                field = {"CPU_HIGH": "cpu_percent", "RAM_HIGH": "ram_percent"}.get(kind)
+                if field:
+                    self.alert_states.setdefault(pc_id, {})[field] = {
+                        "since": None, "last": None, "active": True, "alert_id": alert_id}
 
     def device_snapshot(self, pc_id):
         """Called under lock; freshness uses server time, never Agent clock."""
@@ -180,26 +189,43 @@ class MonitoringServer:
                     if not isinstance(value, str) or not value.strip() or len(value) > 128:
                         raise ValueError(field + " must be a nonempty string of at most 128 characters")
                 candidate = message["pc_id"]
+                power_mode, boot_id = message.get("power_control_mode"), message.get("boot_id")
+                if power_mode not in (None, "simulate", "execute"):
+                    raise ValueError("Invalid power control mode")
+                if boot_id is not None:
+                    if not text(boot_id):
+                        raise ValueError("Invalid boot ID")
+                    parsed_boot = datetime.fromisoformat(boot_id.replace("Z", "+00:00"))
+                    if parsed_boot.tzinfo is None:
+                        raise ValueError("Boot ID requires a timezone")
+                if power_mode == "execute" and boot_id is None:
+                    raise ValueError("Execute mode requires boot ID")
                 with self.lock:
                     if candidate in self.sessions:
                         raise ValueError("PC ID is already connected")
+                    if self.audit is not None:
+                        self.audit.register_device(candidate, message["pc_name"], time.time(), boot_id)
                     pc_id = candidate
                     self.sessions[pc_id] = conn
                     self.metrics_received_at.pop(pc_id, None)
                     self.exam_states.pop(pc_id, None)
                     self.event_rates.pop(pc_id, None)
                     self.rtt_received_at.pop(pc_id, None)
+                    for state in self.alert_states.get(pc_id, {}).values():
+                        state.update(since=None, last=None)
                     self.devices[pc_id] = {"pc_id": pc_id, "pc_name": message["pc_name"],
                                            "online": True, "last_received": utc_now(),
                                            "last_metrics_received": None, "metrics": None,
                                            "agent_session_id": session.executor_id,
-                                           "exam_state_received_at": None}
+                                           "exam_state_received_at": None,
+                                           "boot_id": boot_id, "power_control_mode": power_mode}
             response = {"type": "REGISTER_RESULT", "ok": True}
             if pc_id is not None:
                 response["pc_id"] = pc_id
                 response.update(heartbeat_interval=min(5, self.heartbeat_timeout / 3), rtt_v1=True)
             if exam_supported:
-                response.update(exam_events_v1=True, exam_control_v1=True, exam_foreground_v1=True)
+                response.update(exam_events_v1=True, exam_control_v1=True, exam_foreground_v1=True,
+                                exam_chrome_timeline_v1=True, history_v1=True, power_control_v1=True)
             session.send(response)
             if role == "admin":
                 session.start_notifications()
@@ -221,6 +247,11 @@ class MonitoringServer:
                 message = recv_message(conn)
                 if role == "admin" and message["type"] == "LIST_DEVICES":
                     session.send(self.snapshot())
+                elif role == "admin" and message["type"] == "GET_HISTORY":
+                    if message.get("version") == 1 and type(message.get("version")) is int:
+                        self.history_v1(session, message)
+                    else:
+                        self.history(session, message)
                 elif role == "admin" and message["type"] == "COMMAND":
                     self.route_command(conn, message)
                 elif role == "agent" and message["type"] == "COMMAND_RESULT":
@@ -268,6 +299,13 @@ class MonitoringServer:
                         self.devices[pc_id]["online"] = False
                         self.exam_states.pop(pc_id, None)
                         self.devices[pc_id]["exam_state_received_at"] = None
+                        for state in self.alert_states.get(pc_id, {}).values():
+                            state.update(since=None, last=None)
+                        if self.audit is not None:
+                            try:
+                                self.audit.disconnect_device(pc_id, time.time())
+                            except sqlite3.Error:
+                                LOG.error("Could not persist offline event")
                         disconnected = True
                 if disconnected:
                     LOG.info("Disconnected pc_id=%s", pc_id)
@@ -287,7 +325,7 @@ class MonitoringServer:
         if not isinstance(admin, ssl.SSLSocket) or self.auth is None:
             error = "TLS_REQUIRED"
         elif request.get("action") not in ("LIST_PROCESSES", "STOP_PROCESS", "STOP_PROCESSES",
-                                           "SET_EXAM_MODE", "GET_EXAM_STATUS"):
+                                           "SET_EXAM_MODE", "GET_EXAM_STATUS", *POWER_ACTIONS):
             error = "UNSUPPORTED_ACTION"
         error = error or command_error(request)
         try:
@@ -307,6 +345,17 @@ class MonitoringServer:
                 error = error or "TARGET_OFFLINE"
             elif not isinstance(agent, ssl.SSLSocket) or self.auth is None:
                 error = error or "TLS_REQUIRED"
+            if request.get("action") in POWER_ACTIONS:
+                device = self.devices.get(target, {})
+                mode = device.get("power_control_mode")
+                if self.audit is None:
+                    error = error or "POWER_STATE_UNAVAILABLE"
+                elif mode not in ("simulate", "execute"):
+                    error = error or "POWER_CONTROL_DISABLED"
+                elif request.get("power_control_mode") != mode:
+                    error = error or "POWER_MODE_MISMATCH"
+                elif "target_boot_id" not in request or request["target_boot_id"] != device.get("boot_id"):
+                    error = error or "BOOT_ID_MISMATCH"
             if command_id in self.seen_commands:
                 error = error or "DUPLICATE_COMMAND"
             if len(self.seen_commands) >= 4096:
@@ -319,7 +368,7 @@ class MonitoringServer:
                 self.seen_commands[command_id] = now + 60
                 self.pending_commands[command_id] = {"admin": admin, "target": target, "agent": agent,
                     "until": now + remaining, "pages": None, "received": set(), "action": request["action"],
-                    "request": request}
+                    "request": request, "power_accepted": False}
         if error is not None:
             self.send(admin, {"type": "COMMAND_RESULT", "pc_id": target, "command_id": command_id,
                               "ok": False, "code": error})
@@ -349,6 +398,25 @@ class MonitoringServer:
                 return
             command_result(pending["request"], message)
             finished = True
+            if pending["action"] in POWER_ACTIONS:
+                code, ok, terminal = message.get("code"), message.get("ok"), message.get("terminal")
+                if type(terminal) is not bool:
+                    raise ValueError("Invalid power result terminal flag")
+                if code == "POWER_ACCEPTED":
+                    if not ok or terminal or pending["power_accepted"]:
+                        raise ValueError("Invalid power acceptance")
+                    pending["power_accepted"] = True
+                    pending["until"] = max(pending["until"], time.monotonic() + 5)
+                    finished = False
+                else:
+                    expected_success = ("POWER_SIMULATED" if pending["request"]["power_control_mode"] == "simulate"
+                                        else "POWER_EXECUTION_STARTED")
+                    failure_codes = ("POWER_EXECUTION_UNKNOWN", "POWER_EXECUTION_FAILED", "POWER_CONTROL_DISABLED",
+                        "POWER_UNAVAILABLE", "POWER_MODE_MISMATCH", "BOOT_ID_MISMATCH", "POWER_STATE_UNAVAILABLE",
+                        "INVALID_COMMAND_ID", "WRONG_TARGET", "INVALID_EXPIRY", "EXPIRED_OR_TOO_FAR",
+                        "DUPLICATE_COMMAND", "COMMAND_CAPACITY", "UNSUPPORTED_ACTION")
+                    if not terminal or (ok and (code != expected_success or not pending["power_accepted"])) or (not ok and code not in failure_codes):
+                        raise ValueError("Invalid final power result")
             if pending["action"] == "LIST_PROCESSES" and message.get("ok") is True:
                 page, pages = message.get("page"), message.get("pages")
                 if (message.get("code") != "PROCESS_LIST" or type(page) is not int or type(pages) is not int
@@ -374,8 +442,7 @@ class MonitoringServer:
             self.notify_admin(admin, message)
         except OSError:
             # A closed admin must not disconnect the Agent.
-            with self.lock:
-                self.pending_commands.pop(command_id, None)
+            pass
         if mode_changed:
             self.notify_status(pc_id)
 
@@ -433,6 +500,35 @@ class MonitoringServer:
                 if field.endswith("percent") and value > 100:
                     raise ValueError("Percent must be between 0 and 100")
             clean[field] = value
+        # Only consecutive fresh samples establish a sustained threshold.
+        now = time.monotonic()
+        with self.lock:
+            states = self.alert_states.setdefault(pc_id, {})
+            updated = {key: dict(value) for key, value in states.items()}
+            events = []
+            for field in ("cpu_percent", "ram_percent"):
+                value = clean[field]
+                state = updated.setdefault(field, {"since": None, "last": None, "active": False})
+                if value is None or (state["last"] is not None and now - state["last"] > 6):
+                    state["since"] = None
+                if value is not None and value >= 90:
+                    if state["since"] is None:
+                        state["since"] = now
+                    if not state["active"] and now - state["since"] >= 10:
+                        state["active"] = True
+                        state["alert_id"] = str(uuid4())
+                        events.append({"kind": "CPU_HIGH" if field == "cpu_percent" else "RAM_HIGH",
+                                       "state": "raised", "alert_id": state["alert_id"]})
+                elif value is not None:
+                    state["since"] = None
+                    if state["active"] and value < 85:
+                        state["active"] = False
+                        events.append({"kind": "CPU_HIGH" if field == "cpu_percent" else "RAM_HIGH",
+                                       "state": "resolved", "alert_id": state.pop("alert_id")})
+                state["last"] = now if value is not None else None
+            if self.audit is not None:
+                self.audit.metric(pc_id, time.time(), clean, events)
+            self.alert_states[pc_id] = updated
         with self.lock:
             received = utc_now()
             self.devices[pc_id].update(metrics=clean, last_received=received,
@@ -444,6 +540,76 @@ class MonitoringServer:
                 self.rtt_received_at.pop(pc_id, None)
             elif previous_rtt is None or previous_rtt[0] != rtt_timestamp:
                 self.rtt_received_at[pc_id] = (rtt_timestamp, time.monotonic(), received)
+
+    def history(self, session, request):
+        pc_id, kind = request.get("pc_id"), request.get("kind")
+        start, end, limit = request.get("start_epoch"), request.get("end_epoch"), request.get("limit", 100)
+        valid_time = lambda value: (type(value) in (int, float) and 0 <= value <= 253402300799
+                                    and math.isfinite(value))
+        if (not isinstance(pc_id, str) or not pc_id.strip() or len(pc_id) > 128
+                or kind not in ("metrics", "events") or not valid_time(start) or not valid_time(end)
+                or start >= end or end - start > 30 * 86400 or type(limit) is not int or not 1 <= limit <= 100):
+            session.send({"type": "HISTORY_ERROR", "code": "INVALID_REQUEST"})
+            return
+        if self.audit is None:
+            session.send({"type": "HISTORY_ERROR", "code": "STORAGE_UNAVAILABLE"})
+            return
+        try:
+            rows, truncated = self.audit.history(pc_id, start, end, kind, limit)
+        except sqlite3.Error:
+            LOG.error("History query failed")
+            session.send({"type": "HISTORY_ERROR", "code": "STORAGE_UNAVAILABLE"})
+            return
+        session.send({"type": "HISTORY_RESULT", "pc_id": pc_id, "kind": kind, "rows": rows, "truncated": truncated})
+
+    def history_v1(self, session, request):
+        request_id, pc_id = request.get("request_id"), request.get("pc_id")
+        base = {"type": "HISTORY_RESULT", "version": 1, "request_id": request_id, "pc_id": pc_id}
+        try:
+            if not text(request_id) or not text(pc_id):
+                raise ValueError("INVALID_REQUEST")
+            start = datetime.fromisoformat(request["start_at"].replace("Z", "+00:00"))
+            end = datetime.fromisoformat(request["end_at"].replace("Z", "+00:00"))
+            if start.tzinfo is None or end.tzinfo is None:
+                raise ValueError("INVALID_REQUEST")
+            start, end = start.timestamp(), end.timestamp()
+            if not 0 <= start < end or end - start > 30 * 86400:
+                raise ValueError("INVALID_REQUEST")
+            if self.audit is None:
+                raise sqlite3.OperationalError()
+            metrics, events = self.audit.history_snapshot(pc_id, start, end)
+            stamp = lambda value: datetime.fromtimestamp(value, timezone.utc).isoformat()
+            fields = ("cpu_percent", "ram_percent", "upload_mbps", "download_mbps")
+            rows = []
+            for received, payload in metrics:
+                data = json.loads(payload)
+                rows.append(("metrics", {"received_at": stamp(received), **{key: data[key] for key in fields}}))
+            for received, payload in events:
+                data = json.loads(payload)
+                if data.get("kind") in ("CPU_HIGH", "RAM_HIGH", "DEVICE_OFFLINE") and data.get("state") in ("raised", "resolved") and text(data.get("alert_id")):
+                    rows.append(("events", {"occurred_at": stamp(received), **{key: data[key] for key in ("kind", "state", "alert_id")}}))
+            # Bound encoded frames as well as row count before sending any page.
+            pages, part, size = [], [], len(json.dumps(base, ensure_ascii=True).encode()) + 256
+            for kind, row in rows:
+                row_size = len(json.dumps(row, ensure_ascii=True).encode()) + 2
+                if part and (len(part) == 200 or size + row_size > 60000):
+                    pages.append(part)
+                    part, size = [], len(json.dumps(base, ensure_ascii=True).encode()) + 256
+                part.append((kind, row))
+                size += row_size
+            if part or not pages:
+                pages.append(part)
+            if len(pages) > 64:
+                raise ValueError("HISTORY_TOO_LARGE")
+            for page, part in enumerate(pages):
+                session.send({**base, "ok": True, "page": page, "done": page == len(pages) - 1,
+                              "metrics": [row for kind, row in part if kind == "metrics"],
+                              "events": [row for kind, row in part if kind == "events"]})
+        except (KeyError, AttributeError, TypeError, ValueError, OverflowError, sqlite3.Error) as exc:
+            code = "STORAGE_UNAVAILABLE" if isinstance(exc, sqlite3.Error) else "INVALID_REQUEST"
+            if isinstance(exc, ValueError) and str(exc) == "HISTORY_TOO_LARGE":
+                code = "HISTORY_TOO_LARGE"
+            session.send({**base, "ok": False, "code": code})
 
 
 def handle_client(conn):

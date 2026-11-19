@@ -115,6 +115,26 @@ def exam_event(message, pc_id):
                 or transition == "returned" and (was_chrome or not is_chrome)):
             raise ValueError("Foreground transition does not match process names")
         clean["transition"] = transition
+    elif kind == "EXAM_TAB_CHANGED":
+        if message.get("transition") not in ("left", "returned", "closed"):
+            raise ValueError("Invalid exam tab transition")
+        clean["transition"] = message["transition"]
+    elif kind == "EXAM_CAMERA_STATUS":
+        if message.get("status") not in ("on", "off", "permission_denied", "unavailable"):
+            raise ValueError("Invalid camera status")
+        clean["status"] = message["status"]
+    elif kind == "EXAM_TAB_MONITOR_STATUS":
+        status, reason = message.get("status"), message.get("reason")
+        if not ((status == "monitoring" and reason == "extension_connected") or
+                (status == "unavailable" and reason in ("awaiting_extension", "extension_disconnected", "local_store_unavailable", "event_buffer_overflow"))):
+            raise ValueError("Invalid tab monitor status")
+        count = message.get("dropped_count")
+        if (reason == "event_buffer_overflow" and (type(count) is not int or count <= 0)
+                or reason != "event_buffer_overflow" and "dropped_count" in message):
+            raise ValueError("Invalid dropped event count")
+        clean.update(status=status, reason=reason)
+        if reason == "event_buffer_overflow":
+            clean["dropped_count"] = count
     elif kind == "FOREGROUND_MONITOR_STATUS":
         if message.get("status") not in ("ok", "unavailable"):
             raise ValueError("Invalid foreground monitor status")
