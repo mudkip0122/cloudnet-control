@@ -1,5 +1,6 @@
 """Exam detection and wire/session checks without deployment credentials."""
 from argparse import Namespace
+import ctypes
 import socket
 import threading
 import time
@@ -10,6 +11,7 @@ import psutil
 
 from agent.exam import ExamMonitor
 from agent.main import RegistrationError, main, register, stream
+from agent.windows_process_snapshot import ProcessEntry, secure_system_pid
 from common.protocol import recv_message
 
 
@@ -83,6 +85,51 @@ class ExamTests(unittest.TestCase):
             events = monitor.scan()
             self.assertEqual(events[0]["status"], "ok")
             self.assertEqual(self.detections(events), [])
+
+    def test_only_confirmed_secure_system_is_excluded_from_blank_name_count(self):
+        monitor = self.monitor()
+        with patch("agent.exam.psutil.process_iter") as processes, \
+             patch("agent.exam.secure_system_pid", return_value=288) as identify:
+            processes.return_value = [process(288, "")]
+            status = monitor.scan()[0]
+            self.assertEqual((status["status"], status["unreadable_count"]), ("ok", 0))
+            identify.assert_called_once_with()
+
+            processes.return_value = [process(288, ""), process(584, "")]
+            status = monitor.scan()[0]
+            self.assertEqual((status["status"], status["unreadable_count"]), ("partial", 1))
+
+            identify.side_effect = OSError("Snapshot unavailable")
+            status = self.monitor().scan()[0]
+            self.assertEqual((status["status"], status["unreadable_count"]), ("partial", 2))
+
+    def test_windows_snapshot_recognizes_only_a_unique_secure_system_child(self):
+        for rows, last_error, expected in [
+            ([(4, 0, "System"), (288, 4, "Secure System"), (584, 4, "Secure System.exe")], 18, 288),
+            ([(4, 0, "System"), (288, 584, "Secure System")], 18, None),
+            ([(4, 0, "System"), (288, 4, "Secure System"), (584, 4, "Secure System")], 18, None),
+            ([(4, 0, "System"), (288, 4, "Secure System")], 5, None),
+        ]:
+            with self.subTest(rows=rows, last_error=last_error):
+                entries = iter(rows)
+
+                def read(_snapshot, output):
+                    row = next(entries, None)
+                    if row is None:
+                        return False
+                    entry = ctypes.cast(output, ctypes.POINTER(ProcessEntry)).contents
+                    entry.th32ProcessID, entry.th32ParentProcessID, entry.szExeFile = row
+                    return True
+
+                kernel = Mock()
+                kernel.CreateToolhelp32Snapshot.return_value = 100
+                kernel.Process32FirstW.side_effect = read
+                kernel.Process32NextW.side_effect = read
+                with patch("agent.windows_process_snapshot.sys.platform", "win32"), \
+                     patch("agent.windows_process_snapshot.ctypes.WinDLL", return_value=kernel, create=True), \
+                     patch("agent.windows_process_snapshot.ctypes.get_last_error", return_value=last_error, create=True):
+                    self.assertEqual(secure_system_pid(), expected)
+                kernel.CloseHandle.assert_called_once_with(100)
 
     def test_scan_error_does_not_claim_no_violations_or_repeat_existing(self):
         monitor = self.monitor()

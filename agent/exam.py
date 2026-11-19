@@ -7,6 +7,7 @@ import uuid
 import psutil
 from agent.foreground import ForegroundMonitor
 from agent.window_inventory import displayed_process_ids
+from agent.windows_process_snapshot import SECURE_SYSTEM_NAME, secure_system_pid
 
 
 # Chrome remains available for the exam. Explicit policies replace this preset.
@@ -68,6 +69,7 @@ class ExamMonitor:
         """
         current = set()
         unreadable = set()
+        unnamed = set()
         events = []
         scan_failed = False
         windows = set()
@@ -83,6 +85,7 @@ class ExamMonitor:
                 try:
                     name = process.name()
                     if not name:
+                        unnamed.add(process.pid)
                         unreadable.add(process.pid)
                         continue
                     if name.casefold() not in self.names:
@@ -111,6 +114,13 @@ class ExamMonitor:
             scan_failed = True
         self.seen = current | (self.seen if scan_failed else
                                {key for key in self.seen if key[0] in unreadable})
+        if unnamed and SECURE_SYSTEM_NAME not in self.names:
+            try:
+                system_pid = secure_system_pid()
+            except OSError:
+                system_pid = None
+            if system_pid in unnamed:
+                unreadable.remove(system_pid)
         health = ("unavailable" if scan_failed else "partial" if unreadable or window_scan_failed else "ok")
         if health != self.health:
             events.insert(0, self.event("MONITOR_STATUS", status=health,
