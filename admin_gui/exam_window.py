@@ -43,7 +43,7 @@ class ExamWindow:
         self.needs_status = False
         self.client = ProcessClient(dashboard.host, dashboard.port, dashboard.context,
                                     dashboard.token, server_name=dashboard.server_name)
-        self.window = window(dashboard.root, "시험 모드", "1040x700", (850, 610))
+        self.window = window(dashboard.root, "시험 감독", "1040x700", (850, 610))
         self.history_revision = -1
         self.display_pc_id = None
         self.last_mode_known = False
@@ -55,7 +55,7 @@ class ExamWindow:
         self.target_text = tk.StringVar()
         self.status = tk.StringVar(value="")
         self.monitor_text = tk.StringVar(value="시험 상태 미확인")
-        bar = header(self.window, "시험 모드")
+        bar = header(self.window, "시험 감독")
         self.connection_text = tk.StringVar(value='연결 확인 중')
         self.connection_label = ttk.Label(self.window, textvariable=self.connection_text, style="Muted.TLabel")
         self.connection_label.pack(anchor='w', padx=16, pady=(8, 2))
@@ -85,7 +85,8 @@ class ExamWindow:
             state = tk.StringVar(value='상태 미확인')
             ttk.Label(actions, textvariable=state, style="Surface.TLabel").grid(row=row, column=1, sticky='w', padx=8)
             controls = {'state': state}
-            for column, (action, title) in enumerate((('on', '켜기'), ('off', '끄기'), ('status', '조회')), start=2):
+            for column, (action, title) in enumerate(
+                    (('on', '감독 시작'), ('off', '감독 종료'), ('status', '조회')), start=2):
                 button_style = {'on': 'Primary.TButton', 'off': 'Danger.TButton', 'status': 'TButton'}[action]
                 button = ttk.Button(actions, text=title, state='disabled', style=button_style,
                                     command=lambda pc=pc_id, a=action: self.submit_for_pc(pc, a))
@@ -146,7 +147,7 @@ class ExamWindow:
             self.help_window.deiconify()
             self.help_window.lift()
             return
-        title = "시험 모드 도움말"
+        title = "시험 감독 도움말"
         child = window(self.window, title, "680x420", (660, 390))
         self.help_window = child
         header(child, title)
@@ -160,7 +161,7 @@ class ExamWindow:
             '일부 확인 불가(partial)는 창·프로세스 조회 문제이며 전경 감시 공백과 별개입니다.\n'
             'Chrome 이탈·복귀를 감지하며 탭/URL 감시·자동 차단은 하지 않습니다.\n'
             '공백 전후 이탈 시간을 계산하지 않으며 이력은 현재 실행이나 부정행위 확정이 아닙니다.\n\n'
-            '각 PC 버튼은 해당 PC만 제어합니다. 창을 닫아도 켠 시험은 Agent에서 계속됩니다.\n'
+            '각 PC 버튼은 해당 PC만 제어합니다. 창을 닫아도 진행 중인 시험 감독은 Agent에서 계속됩니다.\n'
             '내역 지우기는 이 GUI에만 적용되며 서버 저장 기록은 유지됩니다.')).pack(anchor="w")
         ttk.Button(card, text="닫기", command=child.destroy).pack(side="bottom", anchor="e")
         child.bind("<Escape>", lambda event: child.destroy())

@@ -364,7 +364,7 @@ class ExamStore:
         if not mode:
             return '시험 상태 미확인 · 활성 창 감시 공백'
         if not mode['enabled']:
-            return '시험 모드 꺼짐 · 활성 창 감시 중지'
+            return '시험 감독 꺼짐 · 활성 창 감시 중지'
         if not self.foreground_stream_connected:
             return '이벤트 연결 미확인 · 활성 창 감시 공백'
         event = self.foreground.get(pc_id)

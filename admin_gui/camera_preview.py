@@ -36,7 +36,7 @@ def main():
     })
     dashboard.open_exam()
     exam = dashboard.exam_window
-    exam.window.title("시험 모드 — 카메라 테스트")
+    exam.window.title("시험 감독 — 카메라 테스트")
     exam.window.geometry("1040x755")
     paused = False
     sequence = 0

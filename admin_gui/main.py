@@ -146,7 +146,7 @@ class Dashboard:
         self.history_button.pack(side="left")
         self.process_button = ttk.Button(toolbar, text="프로세스 목록", command=self.open_processes, state="disabled")
         self.process_button.pack(side="left", padx=8)
-        self.exam_button = ttk.Button(toolbar, text="시험 모드", command=self.open_exam, state="disabled")
+        self.exam_button = ttk.Button(toolbar, text="시험 감독", command=self.open_exam, state="disabled")
         self.exam_button.pack(side="left")
         self.power_button = ttk.Menubutton(toolbar, text="전원 제어", state="disabled")
         self.power_button.pack(side="right")
