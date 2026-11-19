@@ -9,6 +9,15 @@
 - Use AWS MCP skills and documentation when the tools are available. If this already-open session has not loaded MCP tools, use installed AWS skills, official documentation and the authenticated AWS CLI; do not claim MCP tools were invoked.
 - Never print or commit credential cache contents, tokens or private keys.
 
+## Continuing work and startup preferences
+
+- On a new session in this project, check Git status and read `docs/server-week3.md`, `docs/a-window-policy-integration.md`, and `docs/ec2-direct.md` before reporting current progress. Distinguish implementation/local tests from actual PC verification, and recheck live process/connection state rather than trusting old logs.
+- When asked to open the server, use the existing verified SSH connection to check `cloudnet-control-launcher.service` and start it if inactive. Leave an already-running service in place unless a restart/update is requested or needed for an authorized deployment.
+- When asked to start everything, use this order: server service -> PC-01 Agent via the original `Start PC-01 Process Control.cmd` -> visible administrator GUI connected to the production server. Check for duplicates and verify connections. Preserve existing credentials; do not edit B/C source or substitute a different Agent command when the user specifically requests the CMD file.
+- PC-02/03 programs must be operated by their owners; the assistant cannot assume access to those Windows desktops. Ask only for missing participation or access that is actually needed.
+- Starting programs does not authorize automatically enabling exam mode. In joint tests, the user operates exam controls in the GUI while A verifies server state/events. Process termination additionally requires the agreed target PC, PID, creation time, and owner approval.
+- The original A week-three monitoring work has been implemented and verified with three real PCs. Remaining professor-feedback scenarios are tracked separately. Use a roughly 10-minute joint check, not the superseded 40-minute plan, unless the user requests otherwise.
+
 <!-- BEGIN AWS Agent Toolkit rules -->
 # AWS Guidance for the new AWS experience
 
