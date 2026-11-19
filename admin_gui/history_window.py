@@ -4,8 +4,22 @@ import tkinter as tk
 from tkinter import ttk
 
 from admin_gui.charts import FIELDS, LiveCharts
-from admin_gui.history_query import ALERT_LABELS, history_request, query_history, sample_history
+from admin_gui.exam_events import event_columns
+from admin_gui.history_query import ALERT_LABELS, history_request, query_audit_history, query_history, sample_history
+from admin_gui.process_control import POWER_ACTIONS
 from admin_gui.theme import header, window
+
+
+POWER_STAGES = {
+    "request_accepted": "서버 요청 접수", "partial_result": "중간 결과",
+    "result": "최종 결과", "timeout": "시간 초과", "boot_changed": "재부팅 확인",
+    "server_restart_unconfirmed": "서버 재시작 · 결과 미확인",
+}
+POWER_RESULTS = {
+    "POWER_ACCEPTED": "접수", "POWER_SIMULATED": "모의 실행 완료",
+    "POWER_EXECUTION_STARTED": "실행 시작", "POWER_EXECUTION_FAILED": "실행 실패",
+    "POWER_EXECUTION_UNKNOWN": "실행 결과 미확인", "COMMAND_TIMEOUT": "시간 초과",
+}
 
 
 class HistoryWindow:
@@ -16,6 +30,8 @@ class HistoryWindow:
         self.closed = False
         self.executor = ThreadPoolExecutor(max_workers=1)
         self.future = None
+        self.kind = None
+        self.power_rows = {}
         self.source = (dashboard.host, dashboard.port, dashboard.context, dashboard.token, dashboard.server_name)
         self.sample = dashboard.sample
         controls = ttk.Frame(self.window, style="Card.TFrame", padding=10)
@@ -36,11 +52,22 @@ class HistoryWindow:
         ttk.Label(self.window, textvariable=self.status, style="Muted.TLabel").pack(anchor="w", padx=16, pady=(0, 5))
         self.chart = LiveCharts(self.window, historical=True)
         self.chart.pack(fill="both", expand=True, padx=12)
-        ttk.Label(self.window, text="측정 이력 · 서버 수신 시각 (UTC)", style="Muted.TLabel").pack(anchor="w", padx=16)
-        notebook = ttk.Notebook(self.window)
-        notebook.pack(fill="both", expand=True, padx=10, pady=10)
-        self.metrics = self.make_table(notebook, "측정 기록", ("시각 (UTC)", "CPU %", "RAM %", "업로드 Mbps", "다운로드 Mbps"))
-        self.alerts = self.make_table(notebook, "경고 이력", ("시각 (UTC)", "경고 종류", "상태"))
+        self.chart_caption = ttk.Label(self.window, text="측정 이력 · 서버 수신 시각 (UTC)", style="Muted.TLabel")
+        self.chart_caption.pack(anchor="w", padx=16)
+        self.notebook = ttk.Notebook(self.window)
+        self.notebook.pack(fill="both", expand=True, padx=10, pady=10)
+        self.metrics = self.make_table(self.notebook, "측정 기록",
+                                       ("시각 (UTC)", "CPU %", "RAM %", "업로드 Mbps", "다운로드 Mbps"))
+        self.alerts = self.make_table(self.notebook, "경고 이력", ("시각 (UTC)", "경고 종류", "상태"))
+        self.exam = self.make_table(self.notebook, "시험 이력",
+                                    ("발생 시각 (UTC)", "서버 수신 (UTC)", "시험 ID", "이벤트", "상세", "PID"))
+        self.power = self.make_table(self.notebook, "명령 감사",
+                                     ("요청 시각 (UTC)", "대상 PC", "작업", "모드", "결과", "명령 ID"))
+        self.power_detail = ttk.Label(self.power.master, justify="left", wraplength=740, style="Muted.TLabel",
+                                      text="명령을 선택하면 단계별 시각과 재부팅 확인 시각을 볼 수 있습니다.")
+        self.power_detail.pack(side="bottom", fill="x", padx=8, pady=6, before=self.power)
+        self.power.bind("<<TreeviewSelect>>", self.show_power_detail)
+        self.notebook.bind("<<NotebookTabChanged>>", self.tab_changed)
         self.pc.trace_add("write", self.pc_changed)
         self.window.protocol("WM_DELETE_WINDOW", self.close)
         self.timer = self.window.after(100, self.tick)
@@ -59,6 +86,9 @@ class HistoryWindow:
         scrollbar = ttk.Scrollbar(frame, orient="vertical", command=table.yview)
         table.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side="right", fill="y")
+        horizontal = ttk.Scrollbar(frame, orient="horizontal", command=table.xview)
+        table.configure(xscrollcommand=horizontal.set)
+        horizontal.pack(side="bottom", fill="x")
         table.pack(fill="both", expand=True)
         table.tag_configure("raised", foreground="#b91c1c")
         table.tag_configure("resolved", foreground="#047857")
@@ -67,8 +97,10 @@ class HistoryWindow:
     def reset(self, label, pc_id=None):
         self.status.set(label)
         self.chart.show((), label, pc_id)
-        for table in (self.metrics, self.alerts):
+        self.power_rows.clear()
+        for table in (self.metrics, self.alerts, self.exam, self.power):
             table.delete(*table.get_children())
+        self.show_power_detail()
 
     def invalidate(self):
         if self.future is not None:
@@ -82,6 +114,19 @@ class HistoryWindow:
         self.invalidate()
         self.reset("PC ID를 선택한 뒤 조회하세요.")
 
+    def tab_changed(self, _event=None):
+        kind = {str(self.exam.master): "exam", str(self.power.master): "power"}.get(self.notebook.select())
+        if kind == self.kind:
+            return
+        self.kind = kind
+        if kind is None:
+            self.chart.pack(fill="both", expand=True, padx=12, before=self.notebook)
+            self.chart_caption.pack(anchor="w", padx=16, before=self.notebook)
+        else:
+            self.chart.pack_forget()
+            self.chart_caption.pack_forget()
+        self.submit()
+
     def submit(self, _event=None):
         self.invalidate()
         try:
@@ -90,7 +135,13 @@ class HistoryWindow:
             self.reset(str(exc))
             return
         self.reset("조회 중…", request["pc_id"])
-        if self.sample:
+        if self.kind is not None:
+            request.update(type="GET_AUDIT_HISTORY", kind=self.kind)
+            if self.sample:
+                self.reset("샘플 모드 · 서버에 저장된 감사 이력은 운영 연결에서 조회합니다.")
+            else:
+                self.future = self.executor.submit(query_audit_history, *self.source, request)
+        elif self.sample:
             self.future = self.executor.submit(sample_history, request)
         else:
             self.future = self.executor.submit(query_history, *self.source, request)
@@ -102,7 +153,7 @@ class HistoryWindow:
         if future is not None and future.done():
             self.future = None
             try:
-                metrics, alerts = future.result()
+                result = future.result()
             except ValueError as exc:
                 self.reset(f"조회 실패 · {exc}")
             except TimeoutError:
@@ -110,7 +161,10 @@ class HistoryWindow:
             except (OSError, EOFError, OverflowError, RecursionError):
                 self.reset("조회 실패 · 연결 또는 서버 응답 오류")
             else:
-                self.render(metrics, alerts)
+                if self.kind:
+                    self.render_audit(result)
+                else:
+                    self.render(*result)
         self.timer = self.window.after(100, self.tick)
 
     def render(self, metrics, alerts):
@@ -124,6 +178,37 @@ class HistoryWindow:
         for stamp, kind, state in alerts:
             label = "경고 발생" if state == "raised" else "정상 복귀"
             self.alerts.insert("", "end", values=(stamp.isoformat(), ALERT_LABELS[kind], label), tags=(state,))
+
+    def render_audit(self, rows):
+        self.status.set(f"감사 기록 {len(rows)}건" if rows else "조회 결과 없음")
+        if self.kind == "exam":
+            for row in reversed(rows):
+                event = row["event"]
+                kind, detail, pid = event_columns(event)
+                self.exam.insert("", "end", values=(event["timestamp"], row["received_at"].isoformat(),
+                                                     event["exam_id"], kind, detail, pid))
+        else:
+            for row in reversed(rows):
+                mode = {"simulate": "모의 실행", "execute": "실제 실행"}.get(row["power_control_mode"], "—")
+                code = row["result_code"] or row["outcome"]
+                result = "재부팅 확인" if row["reboot_confirmed_at"] else POWER_RESULTS.get(code, code)
+                item = self.power.insert("", "end", values=(row["requested_at"].isoformat(), row["pc_id"],
+                                         POWER_ACTIONS[row["action"]], mode, result, row["command_id"]))
+                self.power_rows[item] = row
+
+    def show_power_detail(self, _event=None):
+        selection = self.power.selection()
+        row = self.power_rows.get(selection[0]) if selection else None
+        if row is None:
+            text = "명령을 선택하면 단계별 시각과 재부팅 확인 시각을 볼 수 있습니다."
+        else:
+            stages = [f"{stamp.isoformat()}  {POWER_STAGES.get(stage, stage)}" + (f" · {code}" if code else "")
+                      for stamp, stage, code in row["stages"]]
+            result = row["result_received_at"]
+            reboot = row["reboot_confirmed_at"]
+            summary = f"최종 결과 수신  {result.isoformat() if result else '—'}   ·   재부팅 확인  {reboot.isoformat() if reboot else '—'}"
+            text = "\n".join((summary, *stages)) if stages else summary + "\n저장된 단계별 기록 없음"
+        self.power_detail.configure(text=text)
 
     def close(self):
         self.closed = True

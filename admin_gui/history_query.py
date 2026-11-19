@@ -4,7 +4,7 @@ import time
 from uuid import uuid4
 
 from admin_gui.charts import FIELDS, metric_value
-from admin_gui.exam_events import timestamp
+from admin_gui.exam_events import exam_event, timestamp
 from common.protocol import recv_message, send_message
 from common.security import connect
 
@@ -76,15 +76,25 @@ def collect_history(request, receive):
 
 
 def query_history(host, port, context, token, server_name, request):
+    return fetch_history(host, port, context, token, server_name, request, "history_v1",
+                         "이력 조회", collect_history)
+
+
+def query_audit_history(host, port, context, token, server_name, request):
+    return fetch_history(host, port, context, token, server_name, request, "audit_history_v1",
+                         "감사 이력 조회", collect_audit_history)
+
+
+def fetch_history(host, port, context, token, server_name, request, capability, label, collect):
     if context is None or not token:
-        raise ValueError("이력 조회에는 TLS 관리자 인증이 필요합니다.")
+        raise ValueError(f"{label}에는 TLS 관리자 인증이 필요합니다.")
     with connect(host, port, context, server_name) as conn:
         send_message(conn, dict(type="REGISTER", role="admin", token=token))
         reply = recv_message(conn)
         if reply.get("type") != "REGISTER_RESULT" or reply.get("ok") is not True:
-            raise ValueError("이력 조회 관리자 인증에 실패했습니다.")
-        if reply.get("history_v1") is not True:
-            raise ValueError("서버가 이력 조회를 지원하지 않습니다.")
+            raise ValueError(f"{label} 관리자 인증에 실패했습니다.")
+        if reply.get(capability) is not True:
+            raise ValueError(f"서버가 {label}를 지원하지 않습니다.")
         send_message(conn, request)
         deadline = time.monotonic() + 10
 
@@ -95,7 +105,76 @@ def query_history(host, port, context, token, server_name, request):
             conn.settimeout(remaining)
             return recv_message(conn)
 
-        return collect_history(request, receive)
+        return collect(request, receive)
+
+
+def collect_audit_history(request, receive):
+    expected = {key: request[key] for key in ("request_id", "pc_id", "kind")}
+    start, end = (timestamp(request[key]) for key in ("start_at", "end_at"))
+    records = []
+    for page in range(2000):
+        reply = receive()
+        if (reply.get("type") != "AUDIT_HISTORY_RESULT" or type(reply.get("version")) is not int
+                or reply["version"] != 1 or any(reply.get(key) != value for key, value in expected.items())):
+            raise ValueError("감사 이력 응답의 요청 식별 정보가 일치하지 않습니다.")
+        if reply.get("ok") is False:
+            code = reply.get("code")
+            errors = {
+                "HISTORY_TOO_LARGE": "결과가 너무 많습니다. 더 짧은 기간으로 조회하세요.",
+                "INVALID_REQUEST": "서버가 PC ID 또는 조회 기간을 거절했습니다.",
+                "TLS_REQUIRED": "TLS 관리자 인증이 필요합니다.",
+                "STORAGE_UNAVAILABLE": "서버 감사 저장소를 사용할 수 없습니다.",
+            }
+            raise ValueError(errors.get(code, "서버가 감사 이력 조회를 완료하지 못했습니다.")
+                             if isinstance(code, str) else "서버 감사 이력 오류")
+        rows = reply.get("rows")
+        if (reply.get("ok") is not True or type(reply.get("page")) is not int or reply["page"] != page
+                or type(reply.get("done")) is not bool or not isinstance(rows, list)
+                or len(rows) > 100 or len(records) + len(rows) > 2000
+                or not rows and not reply["done"]):
+            raise ValueError("감사 이력 페이지 형식이 올바르지 않습니다.")
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ValueError("감사 기록 형식이 올바르지 않습니다.")
+            if request["kind"] == "exam":
+                event = exam_event(row.get("event"))
+                observed = timestamp(row.get("received_at"))
+                record = {"event": event, "received_at": observed}
+            else:
+                event = power_record(row)
+                observed = event["requested_at"]
+                record = event
+            if event["pc_id"] != request["pc_id"] or not start <= observed < end:
+                raise ValueError("감사 기록의 PC 또는 조회 범위가 일치하지 않습니다.")
+            records.append(record)
+        if reply["done"]:
+            return records
+    raise ValueError("감사 이력 응답이 최대 페이지 수를 초과했습니다.")
+
+
+def power_record(row):
+    def required_text(value):
+        return isinstance(value, str) and 0 < len(value) <= 128
+
+    if (any(not required_text(row.get(key)) for key in ("pc_id", "command_id", "outcome"))
+            or row.get("action") not in ("SHUTDOWN_PC", "REBOOT_PC")
+            or row.get("power_control_mode") not in (None, "simulate", "execute")
+            or not isinstance(row.get("stages"), list)):
+        raise ValueError("전원 명령 기록 형식이 올바르지 않습니다.")
+    result = {key: row.get(key) for key in
+              ("pc_id", "command_id", "action", "power_control_mode", "outcome", "result_code")}
+    if result["result_code"] is not None and not required_text(result["result_code"]):
+        raise ValueError("전원 명령 결과 형식이 올바르지 않습니다.")
+    result["requested_at"] = timestamp(row.get("requested_at"))
+    for key in ("result_received_at", "reboot_confirmed_at"):
+        result[key] = timestamp(row[key]) if row.get(key) is not None else None
+    result["stages"] = []
+    for stage in row["stages"]:
+        if (not isinstance(stage, dict) or not required_text(stage.get("stage"))
+                or stage.get("code") is not None and not required_text(stage["code"])):
+            raise ValueError("전원 명령 단계 형식이 올바르지 않습니다.")
+        result["stages"].append((timestamp(stage.get("occurred_at")), stage["stage"], stage.get("code")))
+    return result
 
 
 def sample_history(request):
