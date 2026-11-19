@@ -21,9 +21,11 @@ def main():
     dashboard.tick()
     frames = LatestCameraFrame()
     dashboard.exam_client = SimpleNamespace(
-        camera_frames=frames, connection=queue.Queue(), events=queue.Queue(),
+        connection=queue.Queue(), events=queue.Queue(),
         close=lambda: frames.select(None), worker=SimpleNamespace(is_alive=lambda: False),
     )
+    dashboard.camera_client = SimpleNamespace(select=frames.select, take=frames.take, connected=True,
+                                              close=lambda: None, worker=dashboard.exam_client.worker)
     dashboard.exam_stream_connected = True
     dashboard.exam_generation = 1
     pc_id = "sample-pc-01"

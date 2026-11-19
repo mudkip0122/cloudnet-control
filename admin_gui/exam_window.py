@@ -223,7 +223,7 @@ class ExamWindow:
 
     def refresh_video(self):
         dashboard = self.dashboard
-        frames = getattr(dashboard.exam_client, "camera_frames", None)
+        frames = dashboard.camera_client
         pc_id = self.display_pc_id
         device = dashboard.devices.get(pc_id, {})
         active = (dashboard.exam_store.active_camera(pc_id) if
@@ -234,11 +234,13 @@ class ExamWindow:
             self.clear_video()
         if frames is not None:
             frames.select(target)
-        if target is None:
+        if target is None or not frames.connected:
+            if self.video_photo is not None:
+                self.clear_video()
             return
         now = time.monotonic()
         frame = frames.take()
-        if (frame is not None and not frame.expired(now) and frame.observed >= active[2]
+        if (frame is not None and not frame.expired(now) and (active[2] is None or frame.observed >= active[2])
                 and (self.video_frame is None or frame.observed > self.video_frame.observed)):
             try:
                 image = frame.image()
@@ -357,7 +359,7 @@ class ExamWindow:
         if self.closed:
             return
         self.closed = True
-        frames = getattr(self.dashboard.exam_client, "camera_frames", None)
+        frames = self.dashboard.camera_client
         if frames is not None:
             frames.select(None)
         self.clear_video()
