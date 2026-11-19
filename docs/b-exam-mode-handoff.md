@@ -53,7 +53,7 @@ GUI 원격 켜기·끄기를 허용하고 **처음에는 꺼짐으로 대기**�
 {"type":"EXAM_EVENT","version":1,"event_id":"d30a538a-f2f7-4379-891f-f5377fc27ef2","pc_id":"PC-02","exam_id":"midterm-2026","kind":"FORBIDDEN_PROCESS_DETECTED","timestamp":"2026-11-11T03:00:00Z","process":{"pid":1234,"name":"Discord.exe","create_time":1794365900.25}}
 ```
 
-감시 상태는 시작 직후 및 상태 전환 때 전송합니다. `ok`는 해당 검사에서 이름 조회 오류가 없었다는 의미이며 시험 준수 보증이 아닙니다. `partial`은 일부 프로세스 정보 접근 불가, `unavailable`은 전체 열거 실패입니다. `unreadable_count`는 이번 검사에서 정보를 읽지 못한 PID 수이며 전체 열거 실패 때는 파악한 일부 수치일 수 있습니다.
+감시 상태는 시작 직후 및 상태 전환 때 전송합니다. `ok`는 이번 검사에서 감시 상태를 낮출 조회 실패가 없었다는 의미이며 시험 준수 보증이 아닙니다. `partial`은 일부 프로세스 정보 접근 불가, `unavailable`은 전체 열거 실패입니다. `unreadable_count`는 이번 검사에서 정보를 읽지 못한 PID 수이며 전체 열거 실패 때는 파악한 일부 수치일 수 있습니다. Windows에서 프로세스 이름이 비어도 시스템 스냅샷이 동일 PID를 `System`의 유일한 `Secure System` 자식으로 확인하면 집계에서 제외합니다. 명시적으로 해당 이름을 검사하도록 설정했거나 Windows 조회로 확인하지 못하면 집계에 남습니다.
 
 ```json
 {"type":"EXAM_EVENT","version":1,"event_id":"fab92923-e098-4b75-a071-345f23d80baa","pc_id":"PC-02","exam_id":"midterm-2026","kind":"MONITOR_STATUS","timestamp":"2026-11-11T03:00:00Z","status":"partial","unreadable_count":2,"poll_interval":1}
