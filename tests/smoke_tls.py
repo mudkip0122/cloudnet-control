@@ -3,6 +3,7 @@
 Run: python -m tests.smoke_tls (requires OpenSSL on PATH or Git for Windows).
 Only test-generated keys and tokens are used; no deployment secrets are read.
 """
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import shutil
 import socket
@@ -63,8 +64,12 @@ def main():
                                     continue
                                 assert request["pc_id"] == "tls-test-pc"
                                 assert request.get("token") == token.read_text(encoding="utf-8")
+                                assert request["power_control_mode"] == "simulate"
+                                boot_id = request["boot_id"]
+                                registered_at = datetime.now(timezone.utc)
                                 send_message(conn, {"type": "REGISTER_RESULT", "ok": True,
-                                                    "pc_id": request["pc_id"], "heartbeat_interval": 1})
+                                                    "pc_id": request["pc_id"], "heartbeat_interval": 1,
+                                                    "power_control_v1": True})
                                 message = recv_message(conn)
                                 assert message["type"] == "HEARTBEAT"
                                 assert message["pc_id"] == request["pc_id"]
@@ -74,7 +79,21 @@ def main():
                                 assert message["type"] == "METRICS"
                                 assert message["pc_id"] == "tls-test-pc"
                                 assert isinstance(message["cpu_percent"], (int, float))
+                                assert datetime.fromisoformat(message["timestamp"]) > registered_at
+                                assert message["upload_mbps"] is None and message["download_mbps"] is None
                                 received.append(message)
+                                send_message(conn, {"type": "COMMAND", "action": "REBOOT_PC", "target_id": request["pc_id"],
+                                                    "target_boot_id": boot_id, "command_id": "tls-power-1",
+                                                    "power_control_mode": "simulate",
+                                                    "expires_at": (datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat()})
+                                expected = (["POWER_ACCEPTED", "POWER_SIMULATED"] if index == 1
+                                            else ["DUPLICATE_COMMAND"])
+                                for code in expected:
+                                    result = recv_message(conn)
+                                    while result["type"] in ("HEARTBEAT", "METRICS"):
+                                        result = recv_message(conn)
+                                    assert result["type"] == "COMMAND_RESULT" and result["code"] == code
+                                    assert result["terminal"] == (code != "POWER_ACCEPTED")
                 except BaseException as exc:
                     errors.append(exc)
                 finally:
@@ -83,7 +102,8 @@ def main():
             worker = threading.Thread(target=serve, daemon=True)
             worker.start()
             base = [sys.executable, "-u", "-m", "agent.main", "--host", "127.0.0.1", "--port", str(port),
-                    "--ca-file", str(ca), "--pc-id", "tls-test-pc", "--live"]
+                    "--ca-file", str(ca), "--pc-id", "tls-test-pc", "--live",
+                    "--id-file", str(directory / "id.json"), "--power-control", "simulate"]
             try:
                 rejected = subprocess.run(base + ["--token-file", str(wrong), "--log-file", str(directory / "reject.log")],
                                           capture_output=True, text=True, timeout=12)
@@ -97,7 +117,8 @@ def main():
                 assert len(received) == 2
                 assert received[0]["timestamp"] != received[1]["timestamp"]
                 assert token.read_text(encoding="utf-8") not in (directory / "live.log").read_text(encoding="utf-8")
-                print("PASS: token rejected without retry; verified TLS registration, heartbeat/ACK, real metrics, reconnect and re-authentication")
+                assert "PRIVATE KEY-----" not in (directory / "live.log").read_text(encoding="utf-8")
+                print("PASS: TLS re-authentication, fresh reconnect metrics, credential-free logs, simulated power and replay rejection")
             finally:
                 if agent is not None:
                     stop_process(agent)
