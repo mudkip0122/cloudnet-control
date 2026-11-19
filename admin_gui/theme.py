@@ -62,6 +62,9 @@ def configure_theme(root):
     style.configure("TNotebook", background=BACKGROUND, bordercolor=BORDER)
     style.configure("TNotebook.Tab", padding=(16, 8), background=BACKGROUND)
     style.map("TNotebook.Tab", background=[("selected", WHITE)], foreground=[("selected", BLUE)])
+    style.map("Fixed.TNotebook.Tab", expand=[("selected", (0, 0, 0, 0)), ("!selected", (0, 0, 0, 0))],
+              padding=[("selected", (16, 8)), ("!selected", (16, 8))],
+              background=[("selected", WHITE)], foreground=[("selected", BLUE)])
     style.configure("TLabelframe", background=BACKGROUND, bordercolor=BORDER)
     style.configure("TLabelframe.Label", font=(FONT, 12, "bold"))
 

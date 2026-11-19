@@ -64,7 +64,7 @@ class AlertWindow:
         header(self.window, "실시간 경고")
         self.status = ttk.Label(self.window, style="Muted.TLabel")
         self.status.pack(anchor="w", padx=16, pady=8)
-        tabs = ttk.Notebook(self.window)
+        tabs = ttk.Notebook(self.window, style="Fixed.TNotebook")
         tabs.pack(fill="both", expand=True, padx=12, pady=(0, 12))
         self.open_table = self.table(tabs, "열린 경고", ("PC ID", "경고 종류", "현재 상태"))
         self.event_table = self.table(tabs, "실시간 수신 내역", ("PC ID", "경고 종류", "전환", "서버 시각 (UTC)"))

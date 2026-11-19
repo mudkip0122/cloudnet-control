@@ -5,8 +5,10 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, patch
 
-from admin_gui.history_query import collect_audit_history, history_request, query_audit_history
+from admin_gui.alerts import AlertWindow
+from admin_gui.history_query import collect_audit_history, history_request, query_audit_history, sample_history
 from admin_gui.history_window import HistoryWindow
+from admin_gui.theme import configure_theme
 
 
 class AuditHistoryClientTests(unittest.TestCase):
@@ -28,6 +30,19 @@ class AuditHistoryClientTests(unittest.TestCase):
         self.assertEqual(first["stages"][0][2], "POWER_ACCEPTED")
         self.assertEqual(second["result_code"], "POWER_SIMULATED")
         self.assertEqual(second["stages"], [])
+
+    def test_custom_range_converts_local_time_and_validates_limits(self):
+        start = "2026-11-19 16:20"
+        end = "2026-11-19 16:21"
+        request = history_request("sample-pc-01", start_at=start, end_at=end)
+        expected = datetime(2026, 11, 19, 16, 20).astimezone(timezone.utc)
+        self.assertEqual(datetime.fromisoformat(request["start_at"]), expected)
+        self.assertEqual(datetime.fromisoformat(request["end_at"]), expected + timedelta(minutes=1))
+        points, _ = sample_history(request)
+        self.assertTrue(points)
+        for invalid_end, hint in ((start, "늦어야"), ("2026-12-20 16:20", "최대 30일"), ("invalid", "형식")):
+            with self.assertRaisesRegex(ValueError, hint):
+                history_request("PC-03", start_at=start, end_at=invalid_end)
 
     def test_wrong_pc_and_wrong_audit_kind_are_rejected(self):
         for reply in (dict(self.result, kind="exam", page=0, done=True, rows=[]),
@@ -54,12 +69,20 @@ class AuditHistoryClientTests(unittest.TestCase):
         old.set_running_or_notify_cancel()
         try:
             history.pc.set("PC-03")
+            history.range.current(2)
+            history.range_changed()
+            history.start_at.set("2026-11-19 16:00")
+            history.end_at.set("2026-11-19 16:30")
             with patch.object(history.executor, "submit", side_effect=(old, new)) as submit:
                 history.notebook.select(history.exam.master)
                 history.tab_changed()
                 history.notebook.select(history.power.master)
                 history.tab_changed()
             self.assertEqual([call.args[-1]["kind"] for call in submit.call_args_list], ["exam", "power"])
+            for call in submit.call_args_list:
+                request = call.args[-1]
+                self.assertEqual(datetime.fromisoformat(request["end_at"]) - datetime.fromisoformat(request["start_at"]),
+                                 timedelta(minutes=30))
             old.set_result([])
             history.window.after_cancel(history.timer)
             history.tick()
@@ -75,6 +98,47 @@ class AuditHistoryClientTests(unittest.TestCase):
             history.power.selection_set(item)
             history.show_power_detail()
             self.assertIn("POWER_ACCEPTED", history.power_detail.cget("text"))
+            history.search.set("pc-03 power_accepted")
+            self.assertEqual(history.power.get_children(), (item,))
+            self.assertEqual(history.search_count.get(), "1 / 1건")
+            history.search.set("no match")
+            self.assertFalse(history.power.get_children())
+            self.assertFalse(history.power.selection())
+            history.search.set("")
+            self.assertEqual(history.power.get_children(), (item,))
+        finally:
+            history.close()
+            root.destroy()
+
+    def test_tab_hit_areas_stay_fixed_for_every_selection(self):
+        root = tk.Tk()
+        root.withdraw()
+        configure_theme(root)
+        dashboard = SimpleNamespace(root=root, host="localhost", port=0, context=None, token=None,
+                                    server_name=None, sample=True, devices={})
+        history = HistoryWindow(dashboard, None)
+        live_alerts = AlertWindow(root)
+
+        def hit_areas(notebook):
+            result = []
+            for x in range(0, 520, 2):
+                try:
+                    result.append(notebook.index(f"@{x},14"))
+                except tk.TclError:
+                    result.append(None)
+            return result
+
+        try:
+            root.update()
+            for notebook, count in ((history.notebook, 4), (live_alerts.open_table.master.master, 2)):
+                original = hit_areas(notebook)
+                self.assertEqual(set(original) - {None}, set(range(count)))
+                y = notebook.winfo_y()
+                for index in (*range(1, count), 0):
+                    notebook.select(index)
+                    root.update()
+                    self.assertEqual(hit_areas(notebook), original)
+                    self.assertEqual(notebook.winfo_y(), y)
         finally:
             history.close()
             root.destroy()

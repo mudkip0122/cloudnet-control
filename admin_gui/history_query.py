@@ -11,15 +11,29 @@ from common.security import connect
 ALERT_LABELS = {
     "CPU_HIGH": "CPU 임계치", "RAM_HIGH": "RAM 임계치", "DEVICE_OFFLINE": "PC 오프라인",
 }
+LOCAL_TIME_FORMAT = "%Y-%m-%d %H:%M"
+MAX_HISTORY_PERIOD = timedelta(days=30)
 
 
-def history_request(pc_id, minutes):
+def history_request(pc_id, minutes=None, *, start_at=None, end_at=None):
     pc_id = pc_id.strip()
     if not pc_id or len(pc_id) > 128 or any(ord(char) < 32 for char in pc_id):
         raise ValueError("PC ID를 확인하세요.")
-    end = datetime.now(timezone.utc)
+    if minutes is None:
+        try:
+            start, end = (datetime.strptime(value.strip(), LOCAL_TIME_FORMAT).astimezone(timezone.utc)
+                          for value in (start_at, end_at))
+        except (AttributeError, ValueError, OverflowError, OSError) as exc:
+            raise ValueError("시작·종료 시각을 YYYY-MM-DD HH:MM 형식으로 입력하세요.") from exc
+    else:
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(minutes=minutes)
+    if start >= end:
+        raise ValueError("종료 시각은 시작 시각보다 늦어야 합니다.")
+    if end - start > MAX_HISTORY_PERIOD:
+        raise ValueError("조회 기간은 최대 30일입니다.")
     return dict(type="GET_HISTORY", version=1, request_id=str(uuid4()), pc_id=pc_id,
-                start_at=(end - timedelta(minutes=minutes)).isoformat(), end_at=end.isoformat())
+                start_at=start.isoformat(), end_at=end.isoformat())
 
 
 def collect_history(request, receive):
@@ -178,13 +192,13 @@ def power_record(row):
 
 
 def sample_history(request):
-    end = timestamp(request["end_at"])
+    start, end = (timestamp(request[key]) for key in ("start_at", "end_at"))
     metrics, events = [], []
     if request["pc_id"] == "sample-pc-01":
-        duration = int((end - timestamp(request["start_at"])).total_seconds())
+        duration = int((end - start).total_seconds())
         for index in range(min(duration, 720) // 6):
             measured = end - timedelta(seconds=6 * (index + 1) + (30 if index > 35 else 0))
-            if measured < timestamp(request["start_at"]):
+            if measured < start:
                 break
             cpu = 94 if 11 <= index <= 14 else 20 + index % 13
             metrics.append(dict(received_at=measured.isoformat(), cpu_percent=cpu, ram_percent=60 + index % 7,
@@ -192,9 +206,11 @@ def sample_history(request):
         for alert_id, kind, raised, resolved in (("cpu-1", "CPU_HIGH", 90, 60),
                                                   ("offline-1", "DEVICE_OFFLINE", 250, 220)):
             for state, offset in (("raised", raised), ("resolved", resolved)):
-                events.append(dict(alert_id=alert_id, kind=kind, state=state,
-                                   occurred_at=(end - timedelta(seconds=offset)).isoformat()))
-        events.append(events[0].copy())
+                occurred = end - timedelta(seconds=offset)
+                if start <= occurred:
+                    events.append(dict(alert_id=alert_id, kind=kind, state=state, occurred_at=occurred.isoformat()))
+        if events:
+            events.append(events[0].copy())
     response = dict(type="HISTORY_RESULT", version=1, request_id=request["request_id"], pc_id=request["pc_id"],
                     ok=True, page=0, done=True, metrics=metrics, events=events)
     return collect_history(request, lambda: response)
