@@ -12,7 +12,7 @@ import time
 import sqlite3
 import json
 from uuid import uuid4
-from common.protocol import recv_message, send_message
+from common.protocol import MAX_MESSAGE_BYTES, recv_message, send_message
 from common.security import load_auth, loopback
 from server.audit import AuditStore
 from server.contracts import command_error, command_result, exam_event, rtt_fields, text
@@ -331,6 +331,8 @@ class MonitoringServer:
                 response.update(exam_events_v1=True, exam_control_v1=True, exam_foreground_v1=True,
                                 exam_chrome_timeline_v1=True, history_v1=True, power_control_v1=True,
                                 exam_camera_stream_v1=True, alert_stream_v1=True)
+            if exam_supported and role == "admin":
+                response["audit_history_v1"] = True
             session.send(response)
             if role == "admin":
                 session.start_notifications()
@@ -368,6 +370,8 @@ class MonitoringServer:
                         self.history_v1(session, message)
                     else:
                         self.history(session, message)
+                elif role == "admin" and message["type"] == "GET_AUDIT_HISTORY":
+                    self.audit_history(session, message, exam_supported)
                 elif role == "admin" and message["type"] == "COMMAND":
                     self.route_command(conn, message)
                 elif role == "agent" and message["type"] == "COMMAND_RESULT":
@@ -727,6 +731,53 @@ class MonitoringServer:
             session.send({"type": "HISTORY_ERROR", "code": "STORAGE_UNAVAILABLE"})
             return
         session.send({"type": "HISTORY_RESULT", "pc_id": pc_id, "kind": kind, "rows": rows, "truncated": truncated})
+
+    def audit_history(self, session, request, authorized):
+        request_id, pc_id, kind = (request.get(key) for key in ("request_id", "pc_id", "kind"))
+        base = dict(type="AUDIT_HISTORY_RESULT", version=1,
+                    request_id=request_id if text(request_id) else None,
+                    pc_id=pc_id if text(pc_id) else None, kind=kind if kind in ("exam", "power") else None)
+        error = "INVALID_REQUEST"
+        if not authorized:
+            error = "TLS_REQUIRED"
+        elif (type(request.get("version")) is int and request["version"] == 1
+              and all(base[key] is not None for key in ("pc_id", "request_id", "kind"))):
+            try:
+                bounds = [datetime.fromisoformat(request[key].replace("Z", "+00:00"))
+                          for key in ("start_at", "end_at")]
+                if any(bound.tzinfo is None for bound in bounds):
+                    raise ValueError("Timezone required")
+                start, end = (bound.timestamp() for bound in bounds)
+                if not 0 < end - start <= 30 * 86400:
+                    raise ValueError("Invalid interval")
+            except (KeyError, AttributeError, ValueError, OverflowError, OSError):
+                pass
+            else:
+                try:
+                    records = self.audit.audit_history(pc_id, start, end, kind)
+                    error = "HISTORY_TOO_LARGE"
+                    if len(records) <= 2000:
+                        pages, current = [], []
+                        size = overhead = len(json.dumps(dict(base, ok=True, page=2000, done=False, rows=[]),
+                                                         ensure_ascii=False).encode("utf-8"))
+                        for record in records:
+                            row_size = len(json.dumps(record, ensure_ascii=False, allow_nan=False).encode("utf-8")) + 2
+                            if overhead + row_size > MAX_MESSAGE_BYTES:
+                                break
+                            if current and (len(current) == 100 or size + row_size > MAX_MESSAGE_BYTES):
+                                pages.append(current)
+                                current, size = [], overhead
+                            current.append(record)
+                            size += row_size
+                        else:
+                            pages.append(current)
+                            for page, rows in enumerate(pages):
+                                session.send(dict(base, ok=True, page=page, done=page == len(pages)-1, rows=rows))
+                            return
+                except (sqlite3.Error, ValueError) as exc:
+                    LOG.error("Audit history read failed: %s", type(exc).__name__)
+                    error = "STORAGE_UNAVAILABLE"
+        session.send(dict(base, ok=False, code=error))
 
     def history_v1(self, session, request):
         request_id, pc_id = request.get("request_id"), request.get("pc_id")

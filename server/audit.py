@@ -25,6 +25,8 @@ class AuditStore:
                 request TEXT NOT NULL, result TEXT, outcome TEXT NOT NULL, result_received_at TEXT);
             CREATE INDEX IF NOT EXISTS exam_events_received ON exam_events(received_epoch);
             CREATE INDEX IF NOT EXISTS command_audit_received ON command_audit(received_epoch);
+            CREATE INDEX IF NOT EXISTS command_audit_pc_time ON command_audit(pc_id, received_epoch);
+            CREATE INDEX IF NOT EXISTS exam_events_pc_time ON exam_events(pc_id, received_epoch);
             CREATE TABLE IF NOT EXISTS command_transitions (
                 id INTEGER PRIMARY KEY, command_id TEXT NOT NULL, received_epoch REAL NOT NULL,
                 stage TEXT NOT NULL, code TEXT);
@@ -143,6 +145,35 @@ class AuditStore:
         with self.lock, self.db:
             self.db.execute("INSERT INTO monitoring_events(pc_id, received_epoch, kind, payload) VALUES (?, ?, ?, ?)",
                             (pc_id, received_epoch, kind, json.dumps(payload or {'kind': kind})))
+
+    def audit_history(self, pc_id, start, end, kind):
+        with self.lock:
+            if kind == "exam":
+                rows = self.db.execute(
+                    """SELECT payload, received_epoch FROM exam_events
+                       WHERE pc_id=? AND received_epoch>=? AND received_epoch<?
+                       ORDER BY received_epoch, event_id LIMIT 2001""", (pc_id, start, end)).fetchall()
+                return [{"event": json.loads(payload),
+                         "received_at": datetime.fromtimestamp(epoch, timezone.utc).isoformat()}
+                        for payload, epoch in rows]
+            rows = self.db.execute(
+                """SELECT command_id, received_at, request, result, outcome, result_received_at, reboot_confirmed_at
+                   FROM command_audit WHERE pc_id=? AND received_epoch>=? AND received_epoch<?
+                   AND json_extract(request, '$.action') IN ('SHUTDOWN_PC', 'REBOOT_PC')
+                   ORDER BY received_epoch, command_id LIMIT 2001""", (pc_id, start, end)).fetchall()
+            records = []
+            for command_id, received, raw, result, outcome, result_at, confirmed in rows:
+                request = json.loads(raw)
+                stages = self.db.execute(
+                    "SELECT stage, code, received_epoch FROM command_transitions WHERE command_id=? ORDER BY id",
+                    (command_id,)).fetchall()
+                records.append(dict(command_id=command_id, pc_id=pc_id, action=request["action"],
+                    power_control_mode=request.get("power_control_mode"), requested_at=received,
+                    outcome=outcome, result_code=json.loads(result).get("code") if result else None,
+                    result_received_at=result_at, reboot_confirmed_at=confirmed,
+                    stages=[dict(stage=stage, code=code, occurred_at=datetime.fromtimestamp(epoch, timezone.utc).isoformat())
+                            for stage, code, epoch in stages]))
+            return records
 
     def history_snapshot(self, pc_id, start, end):
         # Read both tables under one lock; cap work and reject instead of silently truncating.

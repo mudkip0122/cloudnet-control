@@ -269,7 +269,7 @@ class ExamStreamTests(unittest.TestCase):
                     store.snapshot(message["devices"])
                 elif message["type"] == "STATUS_UPDATE":
                     store.status_update(message["device"])
-                else:
+                elif message["type"] == "EXAM_EVENT":
                     store.accept(message)
                 if condition():
                     return
