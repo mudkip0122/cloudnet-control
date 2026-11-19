@@ -14,10 +14,12 @@ from common.security import client_arguments, client_settings, connect
 from admin_gui.presentation import device_view
 from admin_gui.theme import BACKGROUND, FONT, GREEN, MUTED, RED, configure_theme, header, window
 from admin_gui.charts import LiveCharts, MetricHistory
+from admin_gui.alerts import AlertWindow, LiveAlerts
 from admin_gui.process_window import ProcessWindow
 from admin_gui.exam_window import ExamWindow
 from admin_gui.history_window import HistoryWindow
-from admin_gui.exam_events import ExamEventClient, ExamStore
+from admin_gui.exam_events import ExamEventClient, ExamStore, timestamp
+from admin_gui.exam_video import CameraClient
 from admin_gui.power_control import PowerOperation, power_target
 from admin_gui.process_control import POWER_ACTIONS, ProcessClient
 
@@ -52,9 +54,14 @@ class Dashboard:
         self.history_window = None
         self.exam_store = ExamStore()
         self.exam_client = None
+        self.camera_client = None
         self.exam_generation = 0
         self.exam_stream_connected = False
         self.exam_gap = False
+        self.alerts = LiveAlerts()
+        self.alert_window = None
+        self.alert_unread = 0
+        self.alert_devices_ready = False
         self.power_client = None
         self.power_supported = False
         self.power_operations = {}
@@ -74,6 +81,8 @@ class Dashboard:
         bar = header(root, "CloudNet Control")
         ttk.Button(bar, text="연결 상세", style="Header.TButton",
                    command=self.open_connection_info).pack(side="right")
+        self.alert_button = ttk.Button(bar, text="실시간 경고", style="Header.TButton", command=self.open_alerts)
+        self.alert_button.pack(side="right", padx=(0, 8))
         self.online_count = tk.StringVar(value="온라인 0/0대")
         ttk.Label(bar, textvariable=self.online_count, style="Header.TLabel").pack(side="right", padx=16)
         self.connection_badge = tk.StringVar(value="● 연결 중" if not sample else "샘플 모드")
@@ -155,6 +164,9 @@ class Dashboard:
         self.worker = threading.Thread(target=(lambda: None) if sample else self.receive, daemon=True)
         if not sample and context is not None and token:
             self.exam_client = ExamEventClient(host, port, context, token, server_name)
+            self.camera_client = CameraClient(host, port, context, token, server_name, timestamp)
+        else:
+            self.alerts.state = "샘플 데이터" if sample else "TLS 관리자 인증 필요"
         self.worker.start()
         self.timer = root.after(100, self.tick)
 
@@ -292,6 +304,7 @@ class Dashboard:
         except queue.Empty:
             pass
         self.drain_exam_events()
+        self.refresh_alerts()
         self.drain_power_results()
         self.update_connection_details()
         # Re-evaluate freshness even while no new server response arrives.
@@ -332,6 +345,12 @@ class Dashboard:
                 self.exam_store.chrome_stream_gap()
             self.exam_store.foreground_stream_connected = connected
             self.exam_generation, self.exam_stream_connected = generation, connected
+            self.alert_devices_ready = False
+            if connected:
+                supported = getattr(self.exam_client, "alert_supported", False)
+                self.alerts.state = "열린 경고 동기화 중" if supported else "서버가 실시간 경고를 지원하지 않습니다"
+            else:
+                self.alerts.state = "감시 공백 · 현재 상태 미확인"
             self.exam_stream.set("시험 이벤트: " + label + (" · 이전 수신 공백 가능" if self.exam_gap else ""))
         except queue.Empty:
             pass
@@ -347,11 +366,33 @@ class Dashboard:
             elif generation == self.exam_generation and self.exam_stream_connected:
                 if kind == 'DEVICE_LIST':
                     self.exam_store.snapshot(message['devices'])
+                    self.alert_devices_ready = True
                     self.observe_power_devices(message['devices'])
                 elif kind == 'STATUS_UPDATE':
                     self.exam_store.status_update(message['device'])
                     self.observe_power_devices([message['device']])
+                elif kind == 'ALERT_SNAPSHOT':
+                    self.alerts.restore(message['alerts'])
+                elif kind == 'ALERT_EVENT':
+                    if self.alerts.accept(message) and message['state'] == 'raised':
+                        self.alert_unread += 1
         self.update_exam_warnings()
+
+    def open_alerts(self):
+        if self.alert_window is None or not self.alert_window.window.winfo_exists():
+            self.alert_window = AlertWindow(self.root)
+        self.alert_window.window.deiconify()
+        self.alert_window.window.lift()
+        self.refresh_alerts()
+
+    def refresh_alerts(self):
+        if self.alert_window is not None and self.alert_window.window.winfo_exists():
+            if self.alert_window.window.state() == "normal":
+                self.alert_unread = 0
+            devices = self.exam_store.devices if self.alert_devices_ready else {}
+            self.alert_window.refresh(self.alerts, devices)
+        label = f"새 경고 {self.alert_unread}" if self.alert_unread else f"실시간 경고 {len(self.alerts.open)}"
+        self.alert_button.configure(text=label, style="Primary.TButton" if self.alert_unread else "Header.TButton")
 
     def update_exam_warnings(self):
         event = self.exam_store.latest_warning
@@ -533,6 +574,8 @@ class Dashboard:
             self.history_window.close()
         if self.exam_client is not None:
             self.exam_client.close()
+        if self.camera_client is not None:
+            self.camera_client.close()
         if self.power_client is not None:
             self.power_client.close()
         self.stop.set()
@@ -551,7 +594,7 @@ class Dashboard:
                 or (exam_client is not None and exam_client.worker.is_alive())):
             self.root.after(50, self.finish_close)
         elif any(client is not None and client.worker.is_alive()
-                 for client in (self.exam_client, self.power_client)):
+                 for client in (self.exam_client, self.camera_client, self.power_client)):
             self.root.after(50, self.finish_close)
         else:
             self.worker.join()

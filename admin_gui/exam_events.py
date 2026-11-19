@@ -12,7 +12,6 @@ from uuid import uuid4
 
 from common.protocol import recv_message, send_message
 from common.security import connect
-from admin_gui.exam_video import LatestCameraFrame
 
 MONITOR_LABELS = {"starting": "검사 시작 중", "ok": "정상 검사", "partial": "일부 확인 불가",
                   "unavailable": "감시 불가", "off": "꺼짐"}
@@ -22,6 +21,7 @@ CHROME_REASONS = {
 }
 CAMERA_LABELS = {"on": "켜짐", "off": "꺼짐", "permission_denied": "권한 거부", "unavailable": "사용 불가"}
 CHROME_KINDS = ("EXAM_TAB_CHANGED", "EXAM_CAMERA_STATUS", "EXAM_TAB_MONITOR_STATUS")
+ALERT_KINDS = ("CPU_HIGH", "RAM_HIGH", "DEVICE_OFFLINE")
 
 
 def timestamp(value):
@@ -31,6 +31,23 @@ def timestamp(value):
     if stamp.tzinfo is None:
         raise ValueError("이벤트 시각에 시간대 필요")
     return stamp.astimezone(timezone.utc)
+
+
+def alert_row(row, snapshot=False):
+    if (not isinstance(row, dict) or row.get("kind") not in ALERT_KINDS
+            or row.get("state") not in (("raised",) if snapshot else ("raised", "resolved"))
+            or any(not isinstance(row.get(key), str) or not row[key].strip() or len(row[key]) > 128
+                   for key in ("pc_id", "alert_id"))):
+        raise ValueError("경고 식별 정보 오류")
+    fields = ("pc_id", "alert_id", "kind", "state")
+    if snapshot:
+        if row.get("observation") not in ("known", "unknown"):
+            raise ValueError("경고 관찰 상태 오류")
+        fields += ("observation",)
+    else:
+        timestamp(row.get("occurred_at"))
+        fields += ("occurred_at",)
+    return {key: row[key] for key in fields}
 
 
 def valid_exam_id(value):
@@ -319,8 +336,9 @@ class ExamStore:
         device = self.devices.get(pc_id, {})
         mode = exam_mode(device.get("exam_mode"))
         state = self.chrome.get(pc_id, {})
-        if device.get("online") and mode and mode["enabled"] and state.get("camera") == "on":
-            return mode["exam_id"], device.get("agent_session_id"), state["camera_observed"]
+        if (device.get("online") and mode and mode["enabled"]
+                and state.get("camera") in (None, "on") and state.get("monitoring") is not False):
+            return mode["exam_id"], device.get("agent_session_id"), state.get("camera_observed")
         return None
 
     def remove_history(self, event_ids):
@@ -378,7 +396,7 @@ class ExamEventClient:
         self.server_name = server_name
         self.events = queue.Queue(maxsize=capacity)
         self.connection = queue.Queue(maxsize=1)
-        self.camera_frames = LatestCameraFrame()
+        self.alert_supported = False
         self.stop = threading.Event()
         self.sock = None
         self.generation = 0
@@ -403,12 +421,14 @@ class ExamEventClient:
                     if self.stop.is_set():
                         return
                     send_message(conn, dict(type='REGISTER', role='admin', token=self.token,
-                                            subscribe_exam=True, subscribe_status=True))
+                                            subscribe_exam=True, subscribe_status=True, subscribe_alerts=True))
                     response = recv_message(conn)
                     if response.get('type') != 'REGISTER_RESULT' or response.get('ok') is not True:
                         self.publish_connection(False, '시험 이벤트 인증/구독 거절 · 서버 지원 확인')
                         return
+                    self.alert_supported = response.get("alert_stream_v1") is True
                     self.publish_connection(True, '관리자 연결됨 · 시험 이벤트 수신 대기 (서버 중계 지원 필요, 감시 정상 보증 아님)')
+                    alert_page, opened = 0, []
                     while not self.stop.is_set():
                         send_message(conn, {'type': 'LIST_DEVICES'})
                         deadline = time.monotonic() + 5
@@ -419,11 +439,29 @@ class ExamEventClient:
                             conn.settimeout(remaining)
                             message = recv_message(conn)
                             kind = message.get('type')
-                            if kind == 'EXAM_CAMERA_FRAME':
-                                self.camera_frames.publish(self.generation, message, timestamp)
-                                continue
                             if kind == 'EXAM_EVENT':
                                 message = exam_event(message)
+                            elif kind in ("ALERT_SNAPSHOT", "ALERT_EVENT"):
+                                if (not self.alert_supported or type(message.get("version")) is not int
+                                        or message["version"] != 1):
+                                    raise ValueError("경고 구독 규격 오류")
+                                if kind == "ALERT_SNAPSHOT":
+                                    rows = message.get("alerts")
+                                    if (opened is None or type(message.get("page")) is not int
+                                            or message["page"] != alert_page or alert_page >= 30
+                                            or type(message.get("done")) is not bool or not isinstance(rows, list)
+                                            or len(rows) > 20 or (alert_page == 29 and not message["done"])):
+                                        raise ValueError("경고 목록 페이지 오류")
+                                    opened.extend(alert_row(row, snapshot=True) for row in rows)
+                                    alert_page += 1
+                                    if not message["done"]:
+                                        continue
+                                    message = {"type": kind, "alerts": opened}
+                                    opened = None
+                                else:
+                                    if opened is not None:
+                                        raise ValueError("초기 경고 목록 대기")
+                                    message = {"type": kind, **alert_row(message)}
                             elif kind == 'DEVICE_LIST':
                                 if not isinstance(message.get('devices'), list):
                                     raise ValueError('시험 상태 목록 오류')
@@ -450,7 +488,6 @@ class ExamEventClient:
 
     def close(self):
         self.stop.set()
-        self.camera_frames.select(None)
         if self.sock is not None:
             try:
                 self.sock.shutdown(socket.SHUT_RDWR)

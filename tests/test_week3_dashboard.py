@@ -65,8 +65,8 @@ class WeekThreeTests(unittest.TestCase):
         Image.new("RGB", (30, 20), "red").save(buffer, "JPEG")
         message = dict(type="EXAM_CAMERA_FRAME", version=1, pc_id="PC-01", format="jpeg",
                        data=base64.b64encode(buffer.getvalue()).decode("ascii"))
-        dashboard.exam_client = SimpleNamespace(camera_frames=frames, close=lambda: None,
-                                                worker=SimpleNamespace(is_alive=lambda: False))
+        dashboard.camera_client = SimpleNamespace(select=frames.select, take=frames.take, connected=True,
+                                                  close=lambda: None, worker=SimpleNamespace(is_alive=lambda: False))
         dashboard.exam_stream_connected = True
         dashboard.exam_generation = 1
         exam = mode(True)
@@ -119,6 +119,40 @@ class WeekThreeTests(unittest.TestCase):
         dashboard.exam_store.snapshot([dict(self.devices[0], exam_mode=mode(False))])
         window.refresh_video()
         self.assertIsNone(window.video_photo)
+
+    def test_live_alert_restore_is_silent_and_recovery_removes_the_open_row(self):
+        dashboard = self.dashboard
+        dashboard.exam_client = SimpleNamespace(
+            alert_supported=True, events=queue.Queue(), connection=queue.Queue(), close=lambda: None,
+            worker=SimpleNamespace(is_alive=lambda: False),
+        )
+        alert = dict(pc_id="PC-01", kind="CPU_HIGH", alert_id="one", state="raised")
+        dashboard.exam_client.connection.put((1, True, "test"))
+        dashboard.exam_client.events.put((1, dict(type="ALERT_SNAPSHOT", alerts=[dict(alert, observation="unknown")])))
+        dashboard.drain_exam_events()
+        self.assertEqual(len(dashboard.alerts.open), 1)
+        self.assertFalse(dashboard.alerts.recent)
+        self.assertEqual(dashboard.alert_unread, 0)
+        dashboard.exam_client.connection.put((1, False, "test disconnect"))
+        dashboard.drain_exam_events()
+        self.assertIn("감시 공백", dashboard.alerts.observation(alert, {}))
+        dashboard.exam_client.connection.put((2, True, "test reconnect"))
+        messages = [dict(type="ALERT_SNAPSHOT", alerts=[dict(alert, observation="unknown")])]
+        for state in ("raised", "resolved", "resolved"):
+            messages.append(dict(alert, type="ALERT_EVENT", state=state, occurred_at=self.now.isoformat()))
+        for message in messages:
+            dashboard.exam_client.events.put((2, message))
+        dashboard.drain_exam_events()
+        self.assertFalse(dashboard.alerts.open)
+        self.assertEqual([row["state"] for row in dashboard.alerts.recent], ["resolved"])
+        self.assertEqual(dashboard.alert_unread, 0)
+        dashboard.exam_client.events.put((2, dict(alert, type="ALERT_EVENT", alert_id="two",
+                                                    occurred_at=self.now.isoformat())))
+        dashboard.drain_exam_events()
+        self.assertEqual(dashboard.alert_unread, 1)
+        dashboard.open_alerts()
+        self.assertEqual(dashboard.alert_unread, 0)
+        self.assertEqual(len(dashboard.alert_window.open_table.get_children()), 1)
 
     def test_monitor_pc_order_is_fixed_across_arrivals_and_reconnects(self):
         d = self.dashboard
