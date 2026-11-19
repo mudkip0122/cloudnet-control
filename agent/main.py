@@ -82,6 +82,10 @@ def register(conn, args):
                                             and response.get("exam_chrome_timeline_v1") is True
                                             and bool(getattr(args, "token", None))
                                             and isinstance(conn, ssl.SSLSocket))
+    args.session_camera_enabled = (getattr(args, "share_exam_camera", False)
+                                   and response.get("exam_camera_stream_v1") is True
+                                   and bool(getattr(args, "token", None))
+                                   and isinstance(conn, ssl.SSLSocket))
     args.session_power_enabled = response.get("power_control_v1") is True
     if power is not None and power.mode != "off" and not args.session_power_enabled:
         LOG.warning("Remote power control is unsupported by the server")
@@ -103,7 +107,9 @@ def stream(conn, args):
            if getattr(args, "session_rtt_enabled", False) else None)
     exam_commands = getattr(args, "exam_commands", None) or ExamCommands(args.pc_id)
     power_commands = getattr(args, "power_commands", None) or PowerCommands(args.pc_id)
-    chrome_tabs = ChromeTabMonitor(args.pc_id) if getattr(args, "watch_chrome_tabs", False) else None
+    share_camera = getattr(args, "session_camera_enabled", False)
+    chrome_tabs = (ChromeTabMonitor(args.pc_id, share_camera=share_camera)
+                   if getattr(args, "watch_chrome_tabs", False) else None)
     chrome_timeline = getattr(args, "session_chrome_timeline_enabled", False)
     exam_commands.foreground_enabled = getattr(args, "session_foreground_enabled", False)
     initial_monitor = (ExamMonitor(args.pc_id, args.exam_id, args.forbid_process, args.exam_poll_interval,
@@ -194,7 +200,8 @@ def stream(conn, args):
                     exam_commands.poll(send)
                 else:
                     with exam_commands.lock:
-                        chrome_tabs.poll(exam_commands.monitor, send if chrome_timeline else None)
+                        chrome_tabs.poll(exam_commands.monitor, send if chrome_timeline else None,
+                                         send_camera=send if share_camera else None)
                         exam_commands.poll(send)
                 if failed.wait(.1):
                     return
@@ -329,6 +336,8 @@ def main():
                         help="Allow authenticated GUI exam on/off and status commands; starts off unless --exam-mode")
     parser.add_argument("--watch-chrome-tabs", action="store_true",
                         help="Log local Chrome exam tab transitions from the optional extension")
+    parser.add_argument("--share-exam-camera", action="store_true",
+                        help="Share exam camera video with a compatible authenticated server; default off")
     parser.add_argument("--exam-id", help="Exam session identifier (1-64 ASCII letters/digits/_.-)")
     parser.add_argument("--forbid-process", action="append", default=None, metavar="NAME.exe",
                         help="Replace default exam detection list with exact executable names; repeat for multiple names")
@@ -353,6 +362,8 @@ def main():
             raise ValueError("Exam settings require --exam-mode")
         if args.watch_chrome_tabs and not (args.exam_mode or args.allow_remote_exam_control):
             raise ValueError("Chrome tab monitoring requires local or remote exam mode")
+        if args.share_exam_camera and not args.watch_chrome_tabs:
+            raise ValueError("Exam camera sharing requires --watch-chrome-tabs")
     except ValueError as exc:
         parser.error(str(exc))
     if not 1 <= args.port <= 65535:

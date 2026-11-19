@@ -1,5 +1,6 @@
 from io import BytesIO
 from argparse import Namespace
+import base64
 from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
@@ -122,6 +123,57 @@ class ChromeTabTests(unittest.TestCase):
     def test_rejects_invalid_frame_before_reading_body(self):
         with self.assertRaises(ValueError):
             read_message(BytesIO(struct.pack("=I", 1025)))
+
+    def test_camera_frame_reaches_agent_only_while_camera_is_on(self):
+        exam = SimpleNamespace(exam_id="camera-test")
+        monitor = ChromeTabMonitor("PC-02", self.store, share_camera=True)
+        self.addCleanup(monitor.stop)
+        sent = []
+        replies = []
+        encoded = base64.b64encode(b"\xff\xd8test\xff\xd9").decode("ascii")
+
+        class BridgeOutput(BytesIO):
+            def flush(self):
+                self.seek(0)
+                replies.append(read_message(self))
+                self.seek(0)
+                self.truncate()
+                if len(replies) in (3, 5):
+                    monitor.next_poll = 0
+                    monitor.poll(exam, send_camera=sent.append)
+
+        monitor.poll(exam, send_camera=sent.append)
+        requests = b"".join([
+            frame(kind="attach"), frame(kind="camera", state="on"),
+            frame(kind="camera_frame", data=encoded), frame(kind="camera", state="off"),
+            frame(kind="camera_frame", data=encoded),
+        ])
+        serve(BytesIO(requests), BridgeOutput(), self.store)
+
+        self.assertTrue(replies[0]["share_camera"])
+        self.assertEqual(replies[-1]["status"], "invalid_message")
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["type"], "EXAM_CAMERA_FRAME")
+        self.assertEqual(sent[0]["exam_id"], exam.exam_id)
+        self.assertEqual(sent[0]["data"], encoded)
+
+    def test_camera_capability_requires_opt_in_tls_and_current_registration(self):
+        args = Namespace(pc_id="PC-02", pc_name="Test", host="localhost", port=5000,
+                         token="test", share_exam_camera=False)
+        connection = Mock(spec=ssl.SSLSocket)
+        accepted = {"type": "REGISTER_RESULT", "ok": True, "pc_id": args.pc_id}
+        capability = accepted | {"exam_camera_stream_v1": True}
+        with patch("agent.main.send_message"), patch("agent.main.recv_message", side_effect=[
+                capability, capability, capability, accepted]):
+            register(connection, args)
+            self.assertFalse(args.session_camera_enabled)
+            args.share_exam_camera = True
+            register(Mock(), args)
+            self.assertFalse(args.session_camera_enabled)
+            register(connection, args)
+            self.assertTrue(args.session_camera_enabled)
+            register(connection, args)
+            self.assertFalse(args.session_camera_enabled)
 
     def test_timeline_uses_observation_times_and_keeps_quick_disconnect_and_reconnect(self):
         exam = ExamMonitor("PC-02", "timeline")

@@ -7,6 +7,8 @@ import sqlite3
 import time
 from uuid import uuid4
 
+from agent.exam_camera import CameraFrames
+
 LOG = logging.getLogger("cloudnet.agent")
 DEFAULT_DB = Path(__file__).resolve().parents[1] / "runtime" / "chrome-tabs.sqlite3"
 LEASE_SECONDS = 8
@@ -28,15 +30,20 @@ class TabStore:
                 agent_until REAL NOT NULL, host TEXT, host_until REAL, dropped INTEGER NOT NULL)""")
             db.execute("""CREATE TABLE IF NOT EXISTS tab_events (
                 id INTEGER PRIMARY KEY, transition TEXT NOT NULL, observed REAL NOT NULL)""")
+            db.execute("""CREATE TABLE IF NOT EXISTS camera_route (
+                session TEXT PRIMARY KEY, port INTEGER NOT NULL)""")
             yield db
 
-    def start(self, session):
+    def start(self, session, camera_port=None):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.transaction() as db:
             now = time.time()
             active = db.execute("SELECT 1 FROM tab_session WHERE agent_until > ?", (now,)).fetchone()
             if active:
                 return False
+            db.execute("DELETE FROM camera_route")
+            if camera_port is not None:
+                db.execute("INSERT INTO camera_route VALUES (?, ?)", (session, camera_port))
             db.execute("DELETE FROM tab_events")
             db.execute("INSERT OR REPLACE INTO tab_session VALUES (1, ?, ?, NULL, NULL, 0)",
                        (session, now + LEASE_SECONDS))
@@ -63,6 +70,15 @@ class TabStore:
         with self.transaction() as db:
             if db.execute("DELETE FROM tab_session WHERE session = ?", (session,)).rowcount:
                 db.execute("DELETE FROM tab_events")
+                db.execute("DELETE FROM camera_route WHERE session = ?", (session,))
+
+    def camera_port(self, session, host):
+        with self.transaction() as db:
+            now = time.time()
+            route = db.execute("""SELECT port FROM camera_route JOIN tab_session USING (session)
+                                  WHERE session = ? AND host = ? AND agent_until > ? AND host_until > ?""",
+                               (session, host, now, now)).fetchone()
+            return route[0] if route else None
 
     def attach(self, host):
         if not self.path.is_file():
@@ -114,15 +130,18 @@ class TabStore:
 
 
 class ChromeTabMonitor:
-    def __init__(self, pc_id, store=None):
+    def __init__(self, pc_id, store=None, *, share_camera=False):
         self.pc_id = pc_id
         self.store = store or TabStore()
         self.exam = None
         self.session = None
         self.status = None
         self.next_poll = 0
+        self.share_camera = share_camera
+        self.camera_frames = None
+        self.camera_on = False
 
-    def poll(self, exam, send=None):
+    def poll(self, exam, send=None, *, send_camera=None):
         if exam is not self.exam:
             self.stop()
             self.exam = exam
@@ -132,19 +151,26 @@ class ChromeTabMonitor:
         self.next_poll = now + 0.5
         observation = self.read_store()
         if observation is None:
+            self.camera_on = False
+            if self.camera_frames is not None and self.session is not None:
+                self.camera_frames.latest(self.session)
             self.set_status("unavailable", "local_store_unavailable", send)
             return
 
         attached, dropped, events = observation
+        disconnected = False
         if self.status is None and not events:
             self.set_status("unavailable", "awaiting_extension", send)
         for transition, observed in events:
             if transition == "monitor_attached":
                 self.set_status("monitoring", "extension_connected", send, observed=observed)
             elif transition == "monitor_detached":
+                disconnected = True
+                self.camera_on = False
                 self.set_status("unavailable", "extension_disconnected", send, observed=observed)
             elif transition.startswith("camera_"):
                 status = transition.removeprefix("camera_")
+                self.camera_on = status == "on"
                 LOG.info("Chrome exam camera %s: pc=%s exam=%s observed_epoch=%.3f",
                          status, self.pc_id, exam.exam_id, observed)
                 self.emit(send, "EXAM_CAMERA_STATUS", observed, status=status)
@@ -153,18 +179,33 @@ class ChromeTabMonitor:
                          transition, self.pc_id, exam.exam_id, observed)
                 self.emit(send, "EXAM_TAB_CHANGED", observed, transition=transition)
         if dropped:
+            self.camera_on = False
             LOG.warning("Chrome tab events dropped: pc=%s exam=%s count=%s", self.pc_id, exam.exam_id, dropped)
             self.set_status("unavailable", "event_buffer_overflow", send, dropped_count=dropped)
         if attached:
             self.set_status("monitoring", "extension_connected", send)
         else:
+            self.camera_on = False
             self.set_status("unavailable", "extension_disconnected", send)
+        if self.camera_frames is not None:
+            frame = self.camera_frames.latest(self.session)
+            if frame and attached and self.camera_on and not disconnected and send_camera is not None:
+                timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                send_camera({"type": "EXAM_CAMERA_FRAME", "version": 1, "pc_id": self.pc_id,
+                             "exam_id": exam.exam_id, "timestamp": timestamp,
+                             "format": "jpeg", "data": frame})
 
     def read_store(self):
         try:
             if self.session is None:
                 session = uuid4().hex
-                if not self.store.start(session):
+                if self.share_camera and self.camera_frames is None:
+                    try:
+                        self.camera_frames = CameraFrames()
+                    except OSError:
+                        LOG.warning("Could not open the local exam camera receiver")
+                        self.share_camera = False
+                if not self.store.start(session, self.camera_frames.port if self.camera_frames else None):
                     return None
                 self.session = session
             observation = self.store.poll(self.session)
@@ -192,6 +233,10 @@ class ChromeTabMonitor:
             self.emit(send, "EXAM_TAB_MONITOR_STATUS", observed, **fields)
 
     def stop(self):
+        if self.camera_frames is not None:
+            self.camera_frames.close()
+            self.camera_frames = None
+        self.camera_on = False
         if self.session is not None:
             try:
                 self.store.stop(self.session)

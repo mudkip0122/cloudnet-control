@@ -64,9 +64,13 @@ chrome.runtime.onConnect.addListener((port) => {
 
   current.cameraPort = port;
   current.cameraTabId = port.sender.tab?.id;
-  port.onMessage.addListener(({ state }) => {
+  port.onMessage.addListener(({ state, kind, data }) => {
     if (typeof state === "string" && state !== "starting" && Object.hasOwn(cameraLabels, state)) {
       reportCamera(current, state);
+    } else if (kind === "camera_frame" && watch === current && !current.closing
+        && current.cameraPort === port && current.shareCamera && current.cameraState === "on"
+        && typeof data === "string" && data.length <= 32768) {
+      send(current, { kind, data });
     }
   });
   port.onDisconnect.addListener(() => {
@@ -76,7 +80,7 @@ chrome.runtime.onConnect.addListener((port) => {
     current.cameraTabId = null;
     reportCamera(current, "off");
   });
-  port.postMessage({ kind: "start" });
+  port.postMessage(current.shareCamera ? { kind: "start", shareCamera: true } : { kind: "start" });
 });
 
 function send(current, message) {
@@ -105,7 +109,7 @@ chrome.action.onClicked.addListener((tab) => {
     const error = chrome.runtime.lastError;
     stop(current, "ERR", error ? "Agent 연결 실패 · Native Messaging 등록 확인" : "Agent 연결 종료");
   });
-  port.onMessage.addListener(({ status }) => {
+  port.onMessage.addListener(({ status, share_camera }) => {
     if (watch !== current) return;
     current.lastReply = performance.now();
     if (status === "waiting_for_exam" && !current.trusted) {
@@ -123,6 +127,7 @@ chrome.action.onClicked.addListener((tab) => {
     }
     if (current.trusted) return;
     current.trusted = true;
+    current.shareCamera = share_camera === true;
     displayMonitoring(current);
     activate(current, current.activeId);
     if (watch === current) void openCamera(current);

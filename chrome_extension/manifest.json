@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "CloudNet Control 시험 탭",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "시험 중 지정한 탭의 이탈·복귀를 감지하고, 권한을 허용한 카메라를 로컬에서 켭니다.",
   "permissions": ["nativeMessaging"],
   "background": {"service_worker": "background.js"},

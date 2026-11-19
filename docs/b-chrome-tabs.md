@@ -20,7 +20,7 @@
 
 확장 프로그램 0.2.0부터는 참가자가 탭을 지정한 상태에서 시험 모드가 켜지면 작은 Chrome 창이 열리고 카메라 권한을 확인합니다. Chrome이 요청하면 참가자가 **허용**을 선택합니다. 카메라를 사용할 수 있으면 해당 창에 로컬 미리보기가 표시됩니다. 이미 권한을 허용한 경우 시험 시작 후 자동으로 미리보기가 켜집니다. 확장 아이콘에 마우스를 올리면 카메라 상태를 확인할 수 있습니다.
 
-시험을 끄거나 Agent 연결이 끊기거나 시험 탭을 닫으면 카메라 스트림을 종료합니다. 카메라 창을 닫아도 카메라가 꺼집니다. 마이크는 요청하지 않으며 영상은 이 PC의 미리보기에서만 사용합니다. Agent의 로컬 로그에는 `Chrome exam camera on`, `permission_denied`, `unavailable`, `off` 등의 상태만 기록합니다. 시험 또는 연결이 종료되는 순간에는 브라우저 카메라 표시가 사라지는지 확인합니다. [Chrome Windows API](https://developer.chrome.com/docs/extensions/reference/api/windows)
+시험을 끄거나 Agent 연결이 끊기거나 시험 탭을 닫으면 카메라 스트림을 종료합니다. 카메라 창을 닫아도 카메라가 꺼집니다. 마이크는 요청하지 않으며 기본 실행에서 영상은 PC의 미리보기에만 표시됩니다. Agent의 로컬 로그에는 `Chrome exam camera on`, `permission_denied`, `unavailable`, `off` 등의 상태만 기록합니다. 시험 또는 연결이 종료되는 순간에는 브라우저 카메라 표시가 사라지는지 확인합니다. [Chrome Windows API](https://developer.chrome.com/docs/extensions/reference/api/windows)
 
 이미 확장 프로그램을 불러온 PC는 `chrome://extensions`에서 **CloudNet Control 시험 탭** 카드의 새로고침 버튼을 누릅니다. 같은 폴더와 확장 ID를 계속 쓰면 Windows 연결 등록은 그대로 사용할 수 있습니다. Agent가 실행 중이었다면 시험 전 기존 프로세스를 종료하고 최신 코드로 한 번 다시 실행합니다. PC-02는 `Start PC-02 Exam Control.cmd`를 사용합니다.
 
@@ -51,3 +51,20 @@ Agent는 시험 이벤트를 로컬 로그에 남깁니다. 새 이벤트를 수
 - C는 `EXAM_TAB_MONITOR_STATUS`의 `unavailable`을 확장 감시 공백으로 표시하고, 그 경계를 넘겨 탭 이탈 시간을 계산하지 않습니다. `event_buffer_overflow`는 직전 수집 구간에 일부 기록이 누락됐다는 뜻입니다. 확장 연결이 복구되더라도 새 카메라 상태가 오기 전까지는 카메라 상태를 미확인으로 표시합니다.
 - `EXAM_CAMERA_STATUS`의 `off`는 확장에서 확인한 상태입니다. 시험 종료나 연결 해제 시점에는 마지막 `on`을 그대로 유지하지 않고 해당 시험의 관찰을 종료합니다. 영상·음성·URL·제목·탭 ID는 전달하지 않습니다.
 - 연결이 끊겨 전송하지 못한 시험 이벤트는 다음 연결로 재전송하지 않습니다. 실서버 검증을 시작하기 전에 A의 새 이벤트 검증과 구독 중계가 준비되어야 합니다.
+
+## 감독자 영상 송출 연동
+
+확장 프로그램 0.3.0과 새 Agent를 사용합니다. PC-02에서 공유 시험을 할 때 PowerShell에서 `& '.\Start PC-02 Exam Control.cmd' --share-exam-camera`로 실행합니다. 직접 Agent를 실행할 경우 기존 인자에 `--share-exam-camera`를 추가합니다. 참가자가 탭을 지정하고 시험을 시작하는 순서는 동일합니다. 카메라 창은 공유 여부를 표시하고 Chrome의 카메라 권한을 따릅니다.
+
+Agent는 로컬 옵션이 켜져 있고 인증된 TLS 연결의 `REGISTER_RESULT`에 `exam_camera_stream_v1: true`가 있을 때만 활성 시험에서 영상을 보냅니다. 각 메시지는 기존 JSON 프레이밍을 쓰며 필드는 다음과 같습니다.
+
+| 필드 | 값 |
+|---|---|
+| `type`, `version` | `EXAM_CAMERA_FRAME`, `1` |
+| `pc_id`, `exam_id` | 인증된 Agent의 PC ID와 현재 시험 ID |
+| `timestamp` | Agent가 프레임을 전달하는 시각, UTC ISO 8601 |
+| `format`, `data` | `jpeg`, 표준 Base64 문자열 |
+
+영상은 최대 320×240, 초당 2프레임, 압축 프레임당 최대 24 KiB입니다. B는 프레임을 메모리로 전달하고 디스크와 로그에는 저장하지 않습니다. 연결이 끊겨 누락된 프레임은 재전송하지 않습니다.
+
+A는 이 형식을 검증하고 해당 PC·시험을 볼 권한이 있는 관리자 연결에만 중계할 수 있을 때 Agent 등록 응답에 지원 플래그를 켭니다. 느린 뷰어에는 이전 프레임을 쌓지 않습니다. C는 선택한 PC와 현재 시험의 프레임을 표시하고, 카메라 꺼짐·시험 종료·단절 또는 3초간 새 프레임이 없으면 마지막 영상을 지웁니다. 운영 화면에서의 재생은 A·C 연동 후 공동 검증합니다.
