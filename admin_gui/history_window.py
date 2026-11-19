@@ -5,25 +5,25 @@ from tkinter import ttk
 
 from admin_gui.charts import FIELDS, LiveCharts
 from admin_gui.history_query import ALERT_LABELS, history_request, query_history, sample_history
+from admin_gui.theme import header, window
 
 
 class HistoryWindow:
     def __init__(self, dashboard, selected_pc):
-        self.window = tk.Toplevel(dashboard.root)
-        self.window.title("PC 이력 · 경고" + (" · 샘플" if dashboard.sample else ""))
-        self.window.geometry("1000x780")
-        self.window.minsize(820, 620)
+        title = "PC 이력 · 경고" + (" · 샘플" if dashboard.sample else "")
+        self.window = window(dashboard.root, title, "1000x780", (820, 620))
+        header(self.window, title)
         self.closed = False
         self.executor = ThreadPoolExecutor(max_workers=1)
         self.future = None
         self.source = (dashboard.host, dashboard.port, dashboard.context, dashboard.token, dashboard.server_name)
         self.sample = dashboard.sample
-        controls = ttk.Frame(self.window, padding=10)
-        controls.pack(fill="x")
+        controls = ttk.Frame(self.window, style="Card.TFrame", padding=10)
+        controls.pack(fill="x", padx=12, pady=10)
         self.pc = tk.StringVar(value=selected_pc or "")
         self.pcs = ttk.Combobox(controls, textvariable=self.pc, width=20)
         self.pcs.configure(values=tuple(sorted(dashboard.devices)))
-        ttk.Label(controls, text="PC ID").pack(side="left")
+        ttk.Label(controls, text="PC ID", style="Surface.TLabel").pack(side="left")
         self.pcs.pack(side="left", padx=8)
         self.range = ttk.Combobox(controls, values=("최근 10분", "최근 1시간"), state="readonly", width=12)
         self.range.current(0)
@@ -31,12 +31,12 @@ class HistoryWindow:
         self.range.bind("<<ComboboxSelected>>", self.submit)
         self.pcs.bind("<<ComboboxSelected>>", self.submit)
         self.pcs.bind("<Return>", self.submit)
-        ttk.Button(controls, text="조회", command=self.submit).pack(side="left", padx=8)
+        ttk.Button(controls, text="조회", style="Primary.TButton", command=self.submit).pack(side="left", padx=8)
         self.status = tk.StringVar(value="PC ID를 선택하거나 입력하세요.")
-        ttk.Label(controls, textvariable=self.status).pack(side="left", padx=8)
-        self.chart = LiveCharts(self.window)
-        self.chart.configure(text="측정 이력 · 서버 수신 시각 (UTC)")
-        self.chart.pack(fill="both", expand=True, padx=10)
+        ttk.Label(self.window, textvariable=self.status, style="Muted.TLabel").pack(anchor="w", padx=16, pady=(0, 5))
+        self.chart = LiveCharts(self.window, historical=True)
+        self.chart.pack(fill="both", expand=True, padx=12)
+        ttk.Label(self.window, text="측정 이력 · 서버 수신 시각 (UTC)", style="Muted.TLabel").pack(anchor="w", padx=16)
         notebook = ttk.Notebook(self.window)
         notebook.pack(fill="both", expand=True, padx=10, pady=10)
         self.metrics = self.make_table(notebook, "측정 기록", ("시각 (UTC)", "CPU %", "RAM %", "업로드 Mbps", "다운로드 Mbps"))

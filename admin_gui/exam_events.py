@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from common.protocol import recv_message, send_message
 from common.security import connect
+from admin_gui.exam_video import LatestCameraFrame
 
 MONITOR_LABELS = {"starting": "검사 시작 중", "ok": "정상 검사", "partial": "일부 확인 불가",
                   "unavailable": "감시 불가", "off": "꺼짐"}
@@ -296,6 +297,7 @@ class ExamStore:
                 state.update(monitoring=True, camera=None, left=None)
         elif kind == 'EXAM_CAMERA_STATUS':
             state['camera'] = event['status']
+            state['camera_observed'] = observed
         elif event['transition'] == 'left':
             if state.get('monitoring'):
                 state['left'] = observed
@@ -312,6 +314,14 @@ class ExamStore:
         if not device.get('online') or not mode or not mode['enabled']:
             return '관찰 중지' if mode and not mode['enabled'] else '미확인'
         return CAMERA_LABELS.get(self.chrome.get(pc_id, {}).get('camera'), '미확인')
+
+    def active_camera(self, pc_id):
+        device = self.devices.get(pc_id, {})
+        mode = exam_mode(device.get("exam_mode"))
+        state = self.chrome.get(pc_id, {})
+        if device.get("online") and mode and mode["enabled"] and state.get("camera") == "on":
+            return mode["exam_id"], device.get("agent_session_id"), state["camera_observed"]
+        return None
 
     def remove_history(self, event_ids):
         """Remove local display records, retaining dedup and current monitoring state."""
@@ -368,6 +378,7 @@ class ExamEventClient:
         self.server_name = server_name
         self.events = queue.Queue(maxsize=capacity)
         self.connection = queue.Queue(maxsize=1)
+        self.camera_frames = LatestCameraFrame()
         self.stop = threading.Event()
         self.sock = None
         self.generation = 0
@@ -408,6 +419,9 @@ class ExamEventClient:
                             conn.settimeout(remaining)
                             message = recv_message(conn)
                             kind = message.get('type')
+                            if kind == 'EXAM_CAMERA_FRAME':
+                                self.camera_frames.publish(self.generation, message, timestamp)
+                                continue
                             if kind == 'EXAM_EVENT':
                                 message = exam_event(message)
                             elif kind == 'DEVICE_LIST':
@@ -436,6 +450,7 @@ class ExamEventClient:
 
     def close(self):
         self.stop.set()
+        self.camera_frames.select(None)
         if self.sock is not None:
             try:
                 self.sock.shutdown(socket.SHUT_RDWR)

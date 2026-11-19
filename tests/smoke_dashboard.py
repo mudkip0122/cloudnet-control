@@ -104,7 +104,7 @@ def sample_checks():
             assert dashboard.process_button.instate(["disabled"])
             dashboard.table.selection_set("sample-pc-01")
             dashboard.show_detail()
-            assert dashboard.preview_buttons[1].instate(["!disabled"])
+            assert dashboard.power_button.instate(["!disabled"])
             with patch("admin_gui.main.messagebox.askokcancel", return_value=True) as confirm:
                 dashboard.confirm_power("REBOOT_PC")
             assert all(value in confirm.call_args.args[1] for value in ("sample-pc-01", "재부팅", "모의 실행"))

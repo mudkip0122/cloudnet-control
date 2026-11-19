@@ -6,8 +6,11 @@ import time
 from tkinter import ttk
 
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-from matplotlib.dates import DateFormatter, date2num
+from matplotlib.dates import AutoDateLocator, DateFormatter, date2num
 from matplotlib.figure import Figure
+from matplotlib.ticker import MultipleLocator, PercentFormatter
+
+from admin_gui.theme import BLUE, BORDER, MUTED, WHITE
 
 FIELDS = ("cpu_percent", "ram_percent", "upload_mbps", "download_mbps")
 
@@ -69,28 +72,56 @@ def series(points, field):
     return x, y
 
 
-class LiveCharts(ttk.LabelFrame):
-    def __init__(self, parent):
-        super().__init__(parent, text="선택 PC · 최근 180개 측정 · 결측/단절 구간은 연결하지 않음")
-        self.figure = Figure(figsize=(6.5, 3.6), dpi=100, layout="constrained")
-        self.axes = self.figure.subplots(2, 1, sharex=True)
+class LiveCharts(ttk.Frame):
+    def __init__(self, parent, historical=False):
+        super().__init__(parent)
+        self.historical = historical
+        self.axes = []
+        self.plots = []
         self.lines = {}
-        for axis, fields, ylabel in (
-                (self.axes[0], (("cpu_percent", "CPU", "#2563eb"), ("ram_percent", "RAM", "#db2777")), "Usage (%)"),
-                (self.axes[1], (("upload_mbps", "Upload", "#059669"), ("download_mbps", "Download", "#d97706")), "Network (Mbps)")):
+        self.legend_values = {}
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure((0, 1), weight=1, uniform="charts")
+        for row, (title, fields) in enumerate((
+                ("CPU · RAM 사용률", (("cpu_percent", "CPU", BLUE), ("ram_percent", "RAM", "#9333ea"))),
+                ("네트워크 전송량", (("upload_mbps", "업로드", "#00a994"), ("download_mbps", "다운로드", "#ec9900"))))):
+            card = ttk.Frame(self, style="Card.TFrame", padding=(12, 7))
+            card.grid(row=row, column=0, sticky="nsew", pady=(0, 8) if row == 0 else 0)
+            heading = ttk.Frame(card, style="Surface.TFrame")
+            heading.pack(fill="x")
+            ttk.Label(heading, text=title, style="CardTitle.TLabel").pack(side="left", padx=6)
+            figure = Figure(figsize=(5, 1.25), dpi=100, facecolor=WHITE)
+            figure.subplots_adjust(left=.095, right=.975, top=.93, bottom=.24)
+            axis = figure.add_subplot()
+            self.axes.append(axis)
+            for field, label, color in reversed(fields):
+                legend = ttk.Frame(heading, style="Surface.TFrame")
+                legend.pack(side="right", padx=7)
+                ttk.Label(legend, text="━", foreground=color, style="Surface.TLabel").pack(side="left", padx=(0, 4))
+                value = ttk.Label(legend, text=label, style="Surface.TLabel")
+                value.pack(side="left")
+                if row:
+                    self.legend_values[field] = (value, label)
             for field, label, color in fields:
-                self.lines[field], = axis.plot([], [], label=label, color=color, linewidth=1.5, marker=".", markersize=3)
-            axis.set_ylabel(ylabel)
-            axis.grid(True, alpha=.25)
-            axis.legend(loc="upper left", ncol=2, fontsize=8)
+                self.lines[field], = axis.plot([], [], color=color, linewidth=1.7, marker=".", markersize=2.5)
+            axis.grid(True, color=BORDER, linewidth=.7)
+            axis.set_axisbelow(True)
+            for spine in axis.spines.values():
+                spine.set_color(BORDER)
+            axis.tick_params(colors=MUTED, labelsize=8)
+            axis.xaxis.set_major_locator(AutoDateLocator(tz=timezone.utc, minticks=3, maxticks=7))
+            axis.xaxis.set_major_formatter(DateFormatter("%H:%M:%S", tz=timezone.utc))
+            axis.set_xlabel("UTC", loc="right", labelpad=0, color=MUTED, fontsize=8)
+            plot = FigureCanvasTkAgg(figure, master=card)
+            plot.get_tk_widget().pack(fill="both", expand=True)
+            self.plots.append(plot)
         self.axes[0].set_ylim(0, 100)
-        self.axes[1].xaxis.set_major_formatter(DateFormatter("%H:%M:%S", tz=timezone.utc))
-        self.axes[1].set_xlabel("Measurement time (UTC)")
-        self.notice = ttk.Label(self, text="표시 PC ID: 선택 대기", font=("Segoe UI", 11, "bold"))
-        self.notice.pack(side="top", fill="x", padx=8, pady=(4, 2))
-        self.plot = FigureCanvasTkAgg(self.figure, master=self)
-        self.canvas = self.plot.get_tk_widget()
-        self.canvas.pack(fill="both", expand=True)
+        self.axes[0].yaxis.set_major_locator(MultipleLocator(25))
+        self.axes[0].yaxis.set_major_formatter(PercentFormatter(100))
+        self.axes[1].set_ylabel("Mbps", color=MUTED, fontsize=8)
+        self.notice = ttk.Label(self, text="PC를 선택하세요", style="Muted.TLabel")
+        self.notice.grid(row=2, column=0, sticky="w")
+        self.canvas = self.plots[0].get_tk_widget()
         self.points, self.state, self.pc_id = (), "PC를 선택하세요", None
         self.signature = None
         self.last_draw = float("-inf")
@@ -105,8 +136,12 @@ class LiveCharts(ttk.LabelFrame):
             return
         immediate = pc_id != self.pc_id or state != self.state
         self.pc_id, self.state, self.signature = pc_id, state, signature
-        self.notice.configure(text=(f"표시 PC ID: {pc_id or '선택 대기'} · {state}" +
-            (" · 이전 측정 기록" if self.points and state != "온라인" else "")))
+        if state == "온라인" or self.historical:
+            self.notice.grid_remove()
+        else:
+            suffix = " · 이전 측정 기록" if self.points else ""
+            self.notice.configure(text=state + suffix)
+            self.notice.grid()
         elapsed = time.monotonic() - self.last_draw
         if immediate or elapsed >= 1:
             self.draw()
@@ -123,21 +158,28 @@ class LiveCharts(ttk.LabelFrame):
             first, last = self.points[0][0], self.points[-1][0]
             if first == last:
                 first, last = first - 2, last + 2
-            self.axes[1].set_xlim(*[date2num(datetime.fromtimestamp(stamp, timezone.utc)) for stamp in (first, last)])
+            limits = [date2num(datetime.fromtimestamp(stamp, timezone.utc)) for stamp in (first, last)]
         else:
-            self.axes[1].set_xlim(0, 1)
+            limits = (0, 1)
+        for axis in self.axes:
+            axis.set_xlim(*limits)
+            axis.tick_params(axis="x", labelbottom=bool(self.points))
         traffic = [m[field] for _, m in self.points for field in FIELDS[2:] if m.get(field) is not None]
         self.axes[1].set_ylim(0, max(1, max(traffic, default=0) * 1.15))
+        for field, (widget, label) in self.legend_values.items():
+            value = self.points[-1][1].get(field) if self.points and self.state == "온라인" else None
+            widget.configure(text=f"{label} {value:.2f} Mbps" if value is not None else label)
         self.last_draw = time.monotonic()
-        self.plot.draw_idle()
+        for plot in self.plots:
+            plot.draw_idle()
 
     def on_destroy(self, event):
         if event.widget is self:
             if self.pending_draw is not None:
                 self.after_cancel(self.pending_draw)
                 self.pending_draw = None
-            idle = getattr(self.plot, "_idle_draw_id", None)
-            if idle:
-                self.after_cancel(idle)
-                self.plot._idle_draw_id = None
-            self.figure.clear()
+            for plot in self.plots:
+                if plot._idle_draw_id:
+                    self.after_cancel(plot._idle_draw_id)
+                    plot._idle_draw_id = None
+                plot.figure.clear()

@@ -1,5 +1,6 @@
 """Same dashboard layout with labelled sample data and no network worker."""
 from datetime import timedelta
+from math import sin
 
 import customtkinter as ctk
 
@@ -20,6 +21,16 @@ def build_sample(root):
          "last_received": stamp, "metrics": None},
     ]
     device = devices[0]
+    current = device["metrics"]
+    for offset in range(120, 0, -1):
+        metrics = dict(current, timestamp=(dashboard.sample_now - timedelta(seconds=2 * offset)).isoformat(),
+                       cpu_percent=current["cpu_percent"] + 2.1 * sin(offset * .28),
+                       ram_percent=current["ram_percent"] + 1.4 * sin(offset * .13),
+                       upload_mbps=current["upload_mbps"] + .35 * sin(offset * .52),
+                       download_mbps=current["download_mbps"] + .8 * sin(offset * .41))
+        dashboard.history.update({device["pc_id"]: dict(device, metrics=metrics)})
+    current.update(rtt_status="ok", rtt_timestamp=stamp, rtt_ms=281)
+    device["metrics_stale"] = False
     device["exam_mode"] = dict(enabled=True, exam_id="sample-exam", monitor_status="ok",
                                forbidden_processes=["notepad.exe"], poll_interval=1)
     dashboard.exam_store.snapshot(devices)
