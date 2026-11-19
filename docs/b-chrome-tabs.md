@@ -20,7 +20,7 @@
 
 확장 프로그램 0.2.0부터는 참가자가 탭을 지정한 상태에서 시험 모드가 켜지면 작은 Chrome 창이 열리고 카메라 권한을 확인합니다. Chrome이 요청하면 참가자가 **허용**을 선택합니다. 카메라를 사용할 수 있으면 해당 창에 로컬 미리보기가 표시됩니다. 이미 권한을 허용한 경우 시험 시작 후 자동으로 미리보기가 켜집니다. 확장 아이콘에 마우스를 올리면 카메라 상태를 확인할 수 있습니다.
 
-시험을 끄거나 Agent 연결이 끊기거나 시험 탭을 닫으면 카메라 스트림을 종료합니다. 카메라 창을 닫아도 카메라가 꺼집니다. 마이크는 요청하지 않으며 기본 실행에서 영상은 PC의 미리보기에만 표시됩니다. Agent의 로컬 로그에는 `Chrome exam camera on`, `permission_denied`, `unavailable`, `off` 등의 상태만 기록합니다. 시험 또는 연결이 종료되는 순간에는 브라우저 카메라 표시가 사라지는지 확인합니다. [Chrome Windows API](https://developer.chrome.com/docs/extensions/reference/api/windows)
+시험을 끄거나 Agent 연결이 끊기거나 시험 탭을 닫으면 카메라 스트림을 종료합니다. 카메라 창을 닫아도 카메라가 꺼집니다. 마이크는 요청하지 않으며 영상 공유가 비활성화된 경우에는 PC의 미리보기에만 표시됩니다. Agent의 로컬 로그에는 `Chrome exam camera on`, `permission_denied`, `unavailable`, `off` 등의 상태만 기록합니다. 시험 또는 연결이 종료되는 순간에는 브라우저 카메라 표시가 사라지는지 확인합니다. [Chrome Windows API](https://developer.chrome.com/docs/extensions/reference/api/windows)
 
 이미 확장 프로그램을 불러온 PC는 `chrome://extensions`에서 **CloudNet Control 시험 탭** 카드의 새로고침 버튼을 누릅니다. 같은 폴더와 확장 ID를 계속 쓰면 Windows 연결 등록은 그대로 사용할 수 있습니다. Agent가 실행 중이었다면 시험 전 기존 프로세스를 종료하고 최신 코드로 한 번 다시 실행합니다. PC-02는 `Start PC-02 Exam Control.cmd`를 사용합니다.
 
@@ -54,7 +54,7 @@ Agent는 시험 이벤트를 로컬 로그에 남깁니다. 새 이벤트를 수
 
 ## 감독자 영상 송출 연동
 
-확장 프로그램 0.3.0과 새 Agent를 사용합니다. PC-02에서 공유 시험을 할 때 PowerShell에서 `& '.\Start PC-02 Exam Control.cmd' --share-exam-camera`로 실행합니다. 직접 Agent를 실행할 경우 기존 인자에 `--share-exam-camera`를 추가합니다. 참가자가 탭을 지정하고 시험을 시작하는 순서는 동일합니다. 카메라 창은 공유 여부를 표시하고 Chrome의 카메라 권한을 따릅니다.
+확장 프로그램 0.3.0과 새 Agent를 사용합니다. PC-01·02·03은 각 PC의 실행 CMD를 더블클릭하면 Chrome 탭 감시와 영상 공유 옵션이 켜집니다. 직접 Agent를 실행할 경우 기존 인자에 `--watch-chrome-tabs`와 `--share-exam-camera`를 추가합니다. 참가자가 탭을 지정하고 시험을 시작하는 순서는 동일합니다. 카메라 창은 공유 여부를 표시하고 Chrome의 카메라 권한을 따릅니다.
 
 Agent는 로컬 옵션이 켜져 있고 인증된 TLS 연결의 `REGISTER_RESULT`에 `exam_camera_stream_v1: true`가 있을 때만 활성 시험에서 영상을 보냅니다. 각 메시지는 기존 JSON 프레이밍을 쓰며 필드는 다음과 같습니다.
 
